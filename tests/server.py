@@ -849,7 +849,7 @@ def setup_test_homeserver(
     hs = homeserver_to_use(
         name,
         config=config,
-        version_string="Synapse/tests",
+        version_string="Archon/tests",
         reactor=reactor,
     )
 

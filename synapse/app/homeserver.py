@@ -330,7 +330,7 @@ def setup(config_options: List[str]) -> SynapseHomeServer:
     hs = SynapseHomeServer(
         config.server.server_name,
         config=config,
-        version_string=f"Synapse/{VERSION}",
+        version_string=f"Archon/{VERSION}",
     )
 
     synapse.config.logger.setup_logging(hs, config, use_worker_options=False)

@@ -42,7 +42,7 @@ class MockHomeserver(HomeServer):
             hostname=config.server.server_name,
             config=config,
             reactor=reactor,
-            version_string=f"Synapse/{SYNAPSE_VERSION}",
+            version_string=f"Archon/{SYNAPSE_VERSION}",
         )
 
 

@@ -252,7 +252,7 @@ def start(config_options: List[str]) -> None:
     ss = AdminCmdServer(
         config.server.server_name,
         config=config,
-        version_string=f"Synapse/{SYNAPSE_VERSION}",
+        version_string=f"Archon/{SYNAPSE_VERSION}",
     )
 
     setup_logging(ss, config, use_worker_options=True)

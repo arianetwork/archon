@@ -313,6 +313,13 @@ class WorkerConfig(Config):
             self.worker_name is None and background_tasks_instance == "master"
         ) or self.worker_name == background_tasks_instance
 
+        # Set the default max request size for the worker
+        default_max_request_size = config.get("default_max_request_size", None)
+        if isinstance(default_max_request_size, int) or isinstance(default_max_request_size, str):
+            self.default_max_request_size = self.parse_size(default_max_request_size)
+        else:
+            self.default_max_request_size = None
+
         self.should_notify_appservices = self._should_this_worker_perform_duty(
             config,
             legacy_master_option_name="notify_appservices",

@@ -465,7 +465,7 @@ def start(config_options: List[str]) -> None:
     hs = GenericWorkerServer(
         config.server.server_name,
         config=config,
-        version_string=f"Synapse/{SYNAPSE_VERSION}",
+        version_string=f"Archon/{SYNAPSE_VERSION}",
     )
 
     setup_logging(hs, config, use_worker_options=True)
