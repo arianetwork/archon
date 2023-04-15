@@ -54,6 +54,7 @@ __pycache__/
 /coverage.*
 /dist/
 /docs/build/
+/dev-docs/_build/
 /htmlcov
 /pip-wheel-metadata/
 
@@ -62,7 +63,7 @@ book/
 
 # complement
 /complement-*
-/master.tar.gz
+/main.tar.gz
 
 # rust
 /target/
