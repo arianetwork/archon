@@ -891,7 +891,7 @@ def set_cors_headers(request: SynapseRequest) -> None:
     if request.experimental_cors_msc3886:
         request.setHeader(
             b"Access-Control-Allow-Headers",
-            b"X-Requested-With, Content-Type, Authorization, Date, If-Match, If-None-Match",
+            b"X-Requested-With, Content-Type, Authorization, Date, If-Match, If-None-Match, Cookie",
         )
         request.setHeader(
             b"Access-Control-Expose-Headers",
@@ -900,7 +900,7 @@ def set_cors_headers(request: SynapseRequest) -> None:
     else:
         request.setHeader(
             b"Access-Control-Allow-Headers",
-            b"X-Requested-With, Content-Type, Authorization, Date",
+            b"X-Requested-With, Content-Type, Authorization, Date, Cookie",
         )
         request.setHeader(
             b"Access-Control-Expose-Headers",
