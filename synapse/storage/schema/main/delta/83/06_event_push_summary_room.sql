@@ -1,4 +1,4 @@
-/* Copyright 2020 The Matrix.org Foundation C.I.C.
+/* Copyright 2023 The Matrix.org Foundation C.I.C
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,5 @@
  * limitations under the License.
  */
 
--- Now that https://github.com/matrix-org/synapse/pull/6232 is a thing, we can
--- remove old rooms from the directory.
-INSERT INTO background_updates (update_name, progress_json) VALUES
-  ('remove_tombstoned_rooms_from_directory', '{}');
+INSERT INTO background_updates (ordering, update_name, progress_json) VALUES
+    (8306, 'event_push_summary_index_room_id', '{}');

@@ -1237,13 +1237,11 @@ class EndToEndKeyWorkerStore(EndToEndKeyBackgroundStore, CacheInvalidationWorker
         for user_id, device_id, algorithm, key_id, key_json in claimed_keys:
             device_results = results.setdefault(user_id, {}).setdefault(device_id, {})
             device_results[f"{algorithm}:{key_id}"] = json_decoder.decode(key_json)
-
-            if (user_id, device_id) in seen_user_device:
-                continue
             seen_user_device.add((user_id, device_id))
-            self._invalidate_cache_and_stream(
-                txn, self.get_e2e_unused_fallback_key_types, (user_id, device_id)
-            )
+
+        self._invalidate_cache_and_stream_bulk(
+            txn, self.get_e2e_unused_fallback_key_types, seen_user_device
+        )
 
         return results
 
@@ -1268,9 +1266,7 @@ class EndToEndKeyWorkerStore(EndToEndKeyBackgroundStore, CacheInvalidationWorker
             if row is None:
                 continue
 
-            key_id = row["key_id"]
-            key_json = row["key_json"]
-            used = row["used"]
+            key_id, key_json, used = row
 
             # Mark fallback key as used if not already.
             if not used and mark_as_used:
@@ -1376,16 +1372,61 @@ class EndToEndKeyWorkerStore(EndToEndKeyBackgroundStore, CacheInvalidationWorker
             List[Tuple[str, str, str, str, str]], txn.execute_values(sql, query_list)
         )
 
-        seen_user_device: Set[Tuple[str, str]] = set()
-        for user_id, device_id, _, _, _ in otk_rows:
-            if (user_id, device_id) in seen_user_device:
-                continue
-            seen_user_device.add((user_id, device_id))
-            self._invalidate_cache_and_stream(
-                txn, self.count_e2e_one_time_keys, (user_id, device_id)
-            )
+        seen_user_device = {
+            (user_id, device_id) for user_id, device_id, _, _, _ in otk_rows
+        }
+        self._invalidate_cache_and_stream_bulk(
+            txn,
+            self.count_e2e_one_time_keys,
+            seen_user_device,
+        )
 
         return otk_rows
+
+    async def get_master_cross_signing_key_updatable_before(
+        self, user_id: str
+    ) -> Tuple[bool, Optional[int]]:
+        """Get time before which a master cross-signing key may be replaced without UIA.
+
+        (UIA means "User-Interactive Auth".)
+
+        There are three cases to distinguish:
+         (1) No master cross-signing key.
+         (2) The key exists, but there is no replace-without-UI timestamp in the DB.
+         (3) The key exists, and has such a timestamp recorded.
+
+        Returns: a 2-tuple of:
+          - a boolean: is there a master cross-signing key already?
+          - an optional timestamp, directly taken from the DB.
+
+        In terms of the cases above, these are:
+         (1) (False, None).
+         (2) (True, None).
+         (3) (True, <timestamp in ms>).
+
+        """
+
+        def impl(txn: LoggingTransaction) -> Tuple[bool, Optional[int]]:
+            # We want to distinguish between three cases:
+            txn.execute(
+                """
+                SELECT updatable_without_uia_before_ms
+                FROM e2e_cross_signing_keys
+                WHERE user_id = ? AND keytype = 'master'
+                ORDER BY stream_id DESC
+                LIMIT 1
+            """,
+                (user_id,),
+            )
+            row = cast(Optional[Tuple[Optional[int]]], txn.fetchone())
+            if row is None:
+                return False, None
+            return True, row[0]
+
+        return await self.db_pool.runInteraction(
+            "e2e_cross_signing_keys",
+            impl,
+        )
 
 
 class EndToEndKeyStore(EndToEndKeyWorkerStore, SQLBaseStore):
@@ -1633,4 +1674,43 @@ class EndToEndKeyStore(EndToEndKeyWorkerStore, SQLBaseStore):
                 for item in signatures
             ],
             desc="add_e2e_signing_key",
+        )
+
+    async def allow_master_cross_signing_key_replacement_without_uia(
+        self, user_id: str, duration_ms: int
+    ) -> Optional[int]:
+        """Mark this user's latest master key as being replaceable without UIA.
+
+        Said replacement will only be permitted for a short time after calling this
+        function. That time period is controlled by the duration argument.
+
+        Returns:
+            None, if there is no such key.
+            Otherwise, the timestamp before which replacement is allowed without UIA.
+        """
+        timestamp = self._clock.time_msec() + duration_ms
+
+        def impl(txn: LoggingTransaction) -> Optional[int]:
+            txn.execute(
+                """
+                UPDATE e2e_cross_signing_keys
+                SET updatable_without_uia_before_ms = ?
+                WHERE stream_id = (
+                    SELECT stream_id
+                    FROM e2e_cross_signing_keys
+                    WHERE user_id = ? AND keytype = 'master'
+                    ORDER BY stream_id DESC
+                    LIMIT 1
+                )
+            """,
+                (timestamp, user_id),
+            )
+            if txn.rowcount == 0:
+                return None
+
+            return timestamp
+
+        return await self.db_pool.runInteraction(
+            "allow_master_cross_signing_key_replacement_without_uia",
+            impl,
         )

@@ -1,4 +1,4 @@
-/* Copyright 2020 The Matrix.org Foundation C.I.C.
+/* Copyright 2023 The Matrix.org Foundation C.I.C
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -12,8 +12,4 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
--- Now that https://github.com/matrix-org/synapse/pull/6232 is a thing, we can
--- remove old rooms from the directory.
-INSERT INTO background_updates (update_name, progress_json) VALUES
-  ('remove_tombstoned_rooms_from_directory', '{}');
+ALTER TABLE e2e_cross_signing_keys ADD COLUMN updatable_without_uia_before_ms bigint DEFAULT NULL;
