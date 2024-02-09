@@ -1,6 +1,7 @@
 #
 # This file is licensed under the Affero General Public License (AGPL) version 3.
 #
+# Copyright 2015, 2016 OpenMarket Ltd
 # Copyright (C) 2023 New Vector, Ltd
 #
 # This program is free software: you can redistribute it and/or modify
@@ -28,17 +29,11 @@ from synapse.storage.databases.main import DataStore
 
 async def get_badge_count(store: DataStore, user_id: str, group_by_room: bool) -> int:
     invites = await store.get_invited_rooms_for_local_user(user_id)
-    joins = await store.get_rooms_for_user(user_id)
 
     badge = len(invites)
 
     room_to_count = await store.get_unread_counts_by_room_for_user(user_id)
-    for room_id, notify_count in room_to_count.items():
-        # room_to_count may include rooms which the user has left,
-        # ignore those.
-        if room_id not in joins:
-            continue
-
+    for _room_id, notify_count in room_to_count.items():
         if notify_count == 0:
             continue
 
