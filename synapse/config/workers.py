@@ -47,11 +47,6 @@ from synapse.config.server import (
 )
 from synapse.types import JsonDict
 
-_DEPRECATED_WORKER_DUTY_OPTION_USED = """
-The '%s' configuration option is deprecated and will be removed in a future
-Synapse version. Please use ``%s: name_of_worker`` instead.
-"""
-
 _MISSING_MAIN_PROCESS_INSTANCE_MAP_DATA = """
 Missing data for a worker to connect to main process. Please include '%s' in the
 `instance_map` declared in your shared yaml configuration as defined in configuration
@@ -482,13 +477,6 @@ class WorkerConfig(Config):
             legacy_option_should_run_here = (
                 self.worker_name is None and run_on_master
             ) or (self.worker_app == legacy_worker_app_name and not run_on_master)
-
-            # Suggest using the new option instead.
-            logger.warning(
-                _DEPRECATED_WORKER_DUTY_OPTION_USED,
-                legacy_master_option_name,
-                new_option_name,
-            )
 
         if self.worker_app == legacy_worker_app_name and config.get(
             legacy_master_option_name, True
