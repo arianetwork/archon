@@ -1759,8 +1759,9 @@ rc_3pid_validation:
 ### `rc_invites`
 
 This option sets ratelimiting how often invites can be sent in a room or to a
-specific user. `per_room` defaults to `per_second: 0.3`, `burst_count: 10` and
-`per_user` defaults to `per_second: 0.003`, `burst_count: 5`.
+specific user. `per_room` defaults to `per_second: 0.3`, `burst_count: 10`,
+`per_user` defaults to `per_second: 0.003`, `burst_count: 5`, and `per_issuer` 
+defaults to `per_second: 0.3`, `burst_count: 10`.
 
 Client requests that invite user(s) when [creating a
 room](https://spec.matrix.org/v1.2/client-server-api/#post_matrixclientv3createroom)
@@ -1944,6 +1945,24 @@ Maximum number of pixels that will be thumbnailed. Defaults to 32M.
 Example configuration:
 ```yaml
 max_image_pixels: 35M
+```
+---
+### `remote_media_download_burst_count`
+
+Remote media downloads are ratelimited using a [leaky bucket algorithm](https://en.wikipedia.org/wiki/Leaky_bucket), where a given "bucket" is keyed to the IP address of the requester when requesting remote media downloads. This configuration option sets the size of the bucket against which the size in bytes of downloads are penalized - if the bucket is full, ie a given number of bytes have already been downloaded, further downloads will be denied until the bucket drains.  Defaults to 500MiB. See also `remote_media_download_per_second` which determines the rate at which the "bucket" is emptied and thus has available space to authorize new requests.  
+
+Example configuration:
+```yaml
+remote_media_download_burst_count: 200M
+```
+---
+### `remote_media_download_per_second`
+
+Works in conjunction with `remote_media_download_burst_count` to ratelimit remote media downloads - this configuration option determines the rate at which the "bucket" (see above) leaks in bytes per second. As requests are made to download remote media, the size of those requests in bytes is added to the bucket, and once the bucket has reached it's capacity, no more requests will be allowed until a number of bytes has "drained" from the bucket. This setting determines the rate at which bytes drain from the bucket, with the practical effect that the larger the number, the faster the bucket leaks, allowing for more bytes downloaded over a shorter period of time. Defaults to 87KiB per second. See also `remote_media_download_burst_count`.
+
+Example configuration:
+```yaml
+remote_media_download_per_second: 40K
 ```
 ---
 ### `prevent_media_downloads_from`
@@ -2700,7 +2719,7 @@ Example configuration:
 session_lifetime: 24h
 ```
 ---
-### `refresh_access_token_lifetime`
+### `refreshable_access_token_lifetime`
 
 Time that an access token remains valid for, if the session is using refresh tokens.
 
@@ -3788,7 +3807,8 @@ This setting defines options related to the user directory.
 This option has the following sub-options:
 * `enabled`:  Defines whether users can search the user directory. If false then
    empty responses are returned to all queries. Defaults to true.
-* `search_all_users`: Defines whether to search all users visible to your HS at the time the search is performed. If set to true, will return all users who share a room with the user from the homeserver.
+* `search_all_users`: Defines whether to search all users visible to your homeserver at the time the search is performed.
+   If set to true, will return all users known to the homeserver matching the search query.
    If false, search results will only contain users
     visible in public rooms and users sharing a room with the requester.
     Defaults to false.
@@ -4132,7 +4152,7 @@ By default, no room is excluded.
 Example configuration:
 ```yaml
 exclude_rooms_from_sync:
-    - !foo:example.com
+    - "!foo:example.com"
 ```
 
 ---
