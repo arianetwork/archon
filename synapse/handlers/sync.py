@@ -1352,7 +1352,7 @@ class SyncHandler:
             await_full_state = True
             lazy_load_members = False
 
-        state_at_timeline_end = await self._state_storage_controller.get_state_at(
+        state_at_timeline_end = await self._state_storage_controller.get_state_ids_at(
             room_id,
             stream_position=end_token,
             state_filter=state_filter,
@@ -1480,11 +1480,13 @@ class SyncHandler:
         else:
             # We can get here if the user has ignored the senders of all
             # the recent events.
-            state_at_timeline_start = await self._state_storage_controller.get_state_at(
-                room_id,
-                stream_position=end_token,
-                state_filter=state_filter,
-                await_full_state=await_full_state,
+            state_at_timeline_start = (
+                await self._state_storage_controller.get_state_ids_at(
+                    room_id,
+                    stream_position=end_token,
+                    state_filter=state_filter,
+                    await_full_state=await_full_state,
+                )
             )
 
         if batch.limited:
@@ -1502,14 +1504,14 @@ class SyncHandler:
             # about them).
             state_filter = StateFilter.all()
 
-        state_at_previous_sync = await self._state_storage_controller.get_state_at(
+        state_at_previous_sync = await self._state_storage_controller.get_state_ids_at(
             room_id,
             stream_position=since_token,
             state_filter=state_filter,
             await_full_state=await_full_state,
         )
 
-        state_at_timeline_end = await self._state_storage_controller.get_state_at(
+        state_at_timeline_end = await self._state_storage_controller.get_state_ids_at(
             room_id,
             stream_position=end_token,
             state_filter=state_filter,
@@ -2268,7 +2270,11 @@ class SyncHandler:
             user=user,
             from_key=presence_key,
             is_guest=sync_config.is_guest,
-            include_offline=include_offline,
+            include_offline=(
+                True
+                if self.hs_config.server.presence_include_offline_users_on_sync
+                else include_offline
+            ),
         )
         assert presence_key
         sync_result_builder.now_token = now_token.copy_and_replace(
@@ -2508,7 +2514,7 @@ class SyncHandler:
                 continue
 
             if room_id in sync_result_builder.joined_room_ids or has_join:
-                old_state_ids = await self._state_storage_controller.get_state_at(
+                old_state_ids = await self._state_storage_controller.get_state_ids_at(
                     room_id,
                     since_token,
                     state_filter=StateFilter.from_types([(EventTypes.Member, user_id)]),
@@ -2539,7 +2545,7 @@ class SyncHandler:
                 else:
                     if not old_state_ids:
                         old_state_ids = (
-                            await self._state_storage_controller.get_state_at(
+                            await self._state_storage_controller.get_state_ids_at(
                                 room_id,
                                 since_token,
                                 state_filter=StateFilter.from_types(
