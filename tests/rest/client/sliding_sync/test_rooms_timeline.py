@@ -14,12 +14,15 @@
 import logging
 from typing import List, Optional
 
+from parameterized import parameterized_class
+
 from twisted.test.proto_helpers import MemoryReactor
 
 import synapse.rest.admin
+from synapse.api.constants import EventTypes
 from synapse.rest.client import login, room, sync
 from synapse.server import HomeServer
-from synapse.types import StreamToken, StrSequence
+from synapse.types import StrSequence
 from synapse.util import Clock
 
 from tests.rest.client.sliding_sync.test_sliding_sync import SlidingSyncBase
@@ -27,6 +30,20 @@ from tests.rest.client.sliding_sync.test_sliding_sync import SlidingSyncBase
 logger = logging.getLogger(__name__)
 
 
+# FIXME: This can be removed once we bump `SCHEMA_COMPAT_VERSION` and run the
+# foreground update for
+# `sliding_sync_joined_rooms`/`sliding_sync_membership_snapshots` (tracked by
+# https://github.com/element-hq/synapse/issues/17623)
+@parameterized_class(
+    ("use_new_tables",),
+    [
+        (True,),
+        (False,),
+    ],
+    class_name_func=lambda cls,
+    num,
+    params_dict: f"{cls.__name__}_{'new' if params_dict['use_new_tables'] else 'fallback'}",
+)
 class SlidingSyncRoomsTimelineTestCase(SlidingSyncBase):
     """
     Test `rooms.timeline` in the Sliding Sync API.
@@ -42,6 +59,8 @@ class SlidingSyncRoomsTimelineTestCase(SlidingSyncBase):
     def prepare(self, reactor: MemoryReactor, clock: Clock, hs: HomeServer) -> None:
         self.store = hs.get_datastores().main
         self.storage_controllers = hs.get_storage_controllers()
+
+        super().prepare(reactor, clock, hs)
 
     def _assertListEqual(
         self,
@@ -130,16 +149,10 @@ class SlidingSyncRoomsTimelineTestCase(SlidingSyncBase):
         user2_tok = self.login(user2_id, "pass")
 
         room_id1 = self.helper.create_room_as(user2_id, tok=user2_tok)
-        self.helper.send(room_id1, "activity1", tok=user2_tok)
-        self.helper.send(room_id1, "activity2", tok=user2_tok)
+        event_response1 = self.helper.send(room_id1, "activity1", tok=user2_tok)
+        event_response2 = self.helper.send(room_id1, "activity2", tok=user2_tok)
         event_response3 = self.helper.send(room_id1, "activity3", tok=user2_tok)
-        event_pos3 = self.get_success(
-            self.store.get_position_for_event(event_response3["event_id"])
-        )
         event_response4 = self.helper.send(room_id1, "activity4", tok=user2_tok)
-        event_pos4 = self.get_success(
-            self.store.get_position_for_event(event_response4["event_id"])
-        )
         event_response5 = self.helper.send(room_id1, "activity5", tok=user2_tok)
         user1_join_response = self.helper.join(room_id1, user1_id, tok=user1_tok)
 
@@ -177,27 +190,23 @@ class SlidingSyncRoomsTimelineTestCase(SlidingSyncBase):
         )
 
         # Check to make sure the `prev_batch` points at the right place
-        prev_batch_token = self.get_success(
-            StreamToken.from_string(
-                self.store, response_body["rooms"][room_id1]["prev_batch"]
-            )
+        prev_batch_token = response_body["rooms"][room_id1]["prev_batch"]
+
+        # If we use the `prev_batch` token to look backwards we should see
+        # `event3` and older next.
+        channel = self.make_request(
+            "GET",
+            f"/rooms/{room_id1}/messages?from={prev_batch_token}&dir=b&limit=3",
+            access_token=user1_tok,
         )
-        prev_batch_room_stream_token_serialized = self.get_success(
-            prev_batch_token.room_key.to_string(self.store)
-        )
-        # If we use the `prev_batch` token to look backwards, we should see `event3`
-        # next so make sure the token encompasses it
-        self.assertEqual(
-            event_pos3.persisted_after(prev_batch_token.room_key),
-            False,
-            f"`prev_batch` token {prev_batch_room_stream_token_serialized} should be >= event_pos3={self.get_success(event_pos3.to_room_stream_token().to_string(self.store))}",
-        )
-        # If we use the `prev_batch` token to look backwards, we shouldn't see `event4`
-        # anymore since it was just returned in this response.
-        self.assertEqual(
-            event_pos4.persisted_after(prev_batch_token.room_key),
-            True,
-            f"`prev_batch` token {prev_batch_room_stream_token_serialized} should be < event_pos4={self.get_success(event_pos4.to_room_stream_token().to_string(self.store))}",
+        self.assertEqual(channel.code, 200, channel.json_body)
+        self.assertListEqual(
+            [
+                event_response3["event_id"],
+                event_response2["event_id"],
+                event_response1["event_id"],
+            ],
+            [ev["event_id"] for ev in channel.json_body["chunk"]],
         )
 
         # With no `from_token` (initial sync), it's all historical since there is no
@@ -573,3 +582,138 @@ class SlidingSyncRoomsTimelineTestCase(SlidingSyncBase):
 
         # Nothing to see for this banned user in the room in the token range
         self.assertIsNone(response_body["rooms"].get(room_id1))
+
+    def test_increasing_timeline_range_sends_more_messages(self) -> None:
+        """
+        Test that increasing the timeline limit via room subscriptions sends the
+        room down with more messages in a limited sync.
+        """
+
+        user1_id = self.register_user("user1", "pass")
+        user1_tok = self.login(user1_id, "pass")
+
+        room_id1 = self.helper.create_room_as(user1_id, tok=user1_tok)
+
+        sync_body = {
+            "lists": {
+                "foo-list": {
+                    "ranges": [[0, 1]],
+                    "required_state": [[EventTypes.Create, ""]],
+                    "timeline_limit": 1,
+                }
+            }
+        }
+
+        message_events = []
+        for _ in range(10):
+            resp = self.helper.send(room_id1, "msg", tok=user1_tok)
+            message_events.append(resp["event_id"])
+
+        # Make the first Sliding Sync request
+        response_body, from_token = self.do_sync(sync_body, tok=user1_tok)
+        room_response = response_body["rooms"][room_id1]
+
+        self.assertEqual(room_response["initial"], True)
+        self.assertNotIn("unstable_expanded_timeline", room_response)
+        self.assertEqual(room_response["limited"], True)
+
+        # We only expect the last message at first
+        self._assertTimelineEqual(
+            room_id=room_id1,
+            actual_event_ids=[event["event_id"] for event in room_response["timeline"]],
+            expected_event_ids=message_events[-1:],
+            message=str(room_response["timeline"]),
+        )
+
+        # We also expect to get the create event state.
+        state_map = self.get_success(
+            self.storage_controllers.state.get_current_state(room_id1)
+        )
+        self._assertRequiredStateIncludes(
+            room_response["required_state"],
+            {state_map[(EventTypes.Create, "")]},
+            exact=True,
+        )
+
+        # Now do another request with a room subscription with an increased timeline limit
+        sync_body["room_subscriptions"] = {
+            room_id1: {
+                "required_state": [],
+                "timeline_limit": 10,
+            }
+        }
+
+        response_body, from_token = self.do_sync(
+            sync_body, since=from_token, tok=user1_tok
+        )
+        room_response = response_body["rooms"][room_id1]
+
+        self.assertNotIn("initial", room_response)
+        self.assertEqual(room_response["unstable_expanded_timeline"], True)
+        self.assertEqual(room_response["limited"], True)
+
+        # Now we expect all the messages
+        self._assertTimelineEqual(
+            room_id=room_id1,
+            actual_event_ids=[event["event_id"] for event in room_response["timeline"]],
+            expected_event_ids=message_events,
+            message=str(room_response["timeline"]),
+        )
+
+        # We don't expect to get the room create down, as nothing has changed.
+        self.assertNotIn("required_state", room_response)
+
+        # Decreasing the timeline limit shouldn't resend any events
+        sync_body["room_subscriptions"] = {
+            room_id1: {
+                "required_state": [],
+                "timeline_limit": 5,
+            }
+        }
+
+        event_response = self.helper.send(room_id1, "msg", tok=user1_tok)
+        latest_event_id = event_response["event_id"]
+
+        response_body, from_token = self.do_sync(
+            sync_body, since=from_token, tok=user1_tok
+        )
+        room_response = response_body["rooms"][room_id1]
+
+        self.assertNotIn("initial", room_response)
+        self.assertNotIn("unstable_expanded_timeline", room_response)
+        self.assertEqual(room_response["limited"], False)
+
+        self._assertTimelineEqual(
+            room_id=room_id1,
+            actual_event_ids=[event["event_id"] for event in room_response["timeline"]],
+            expected_event_ids=[latest_event_id],
+            message=str(room_response["timeline"]),
+        )
+
+        # Increasing the limit to what it was before also should not resend any
+        # events
+        sync_body["room_subscriptions"] = {
+            room_id1: {
+                "required_state": [],
+                "timeline_limit": 10,
+            }
+        }
+
+        event_response = self.helper.send(room_id1, "msg", tok=user1_tok)
+        latest_event_id = event_response["event_id"]
+
+        response_body, from_token = self.do_sync(
+            sync_body, since=from_token, tok=user1_tok
+        )
+        room_response = response_body["rooms"][room_id1]
+
+        self.assertNotIn("initial", room_response)
+        self.assertNotIn("unstable_expanded_timeline", room_response)
+        self.assertEqual(room_response["limited"], False)
+
+        self._assertTimelineEqual(
+            room_id=room_id1,
+            actual_event_ids=[event["event_id"] for event in room_response["timeline"]],
+            expected_event_ids=[latest_event_id],
+            message=str(room_response["timeline"]),
+        )
