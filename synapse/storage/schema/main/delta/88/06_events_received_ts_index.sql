@@ -11,8 +11,7 @@
 -- See the GNU Affero General Public License for more details:
 -- <https://www.gnu.org/licenses/agpl-3.0.html>.
 
-
--- Add an index on `current_state_delta_stream(room_id, stream_id)` to allow
--- efficient per-room lookups.
+-- Add an index on `events.received_ts` for `m.room.member` events to allow for
+-- efficient lookup of events by timestamp in some Admin API's
 INSERT INTO background_updates (ordering, update_name, progress_json) VALUES
-    (8804, 'current_state_delta_stream_room_index', '{}');
+    (8806, 'events_received_ts_index', '{}');
