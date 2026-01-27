@@ -138,7 +138,6 @@ from typing import (
     Hashable,
     Iterable,
     Literal,
-    Optional,
 )
 
 import attr
@@ -175,6 +174,7 @@ from synapse.types import (
     get_domain_from_id,
 )
 from synapse.util.clock import Clock
+from synapse.util.duration import Duration
 from synapse.util.metrics import Measure
 from synapse.util.retryutils import filter_destinations_by_retry_limiter
 
@@ -219,12 +219,12 @@ transaction_queue_pending_edus_gauge = LaterGauge(
 # Please note that rate limiting still applies, so while the loop is
 # executed every X seconds the destinations may not be woken up because
 # they are being rate limited following previous attempt failures.
-WAKEUP_RETRY_PERIOD_SEC = 60
+WAKEUP_RETRY_PERIOD = Duration(minutes=1)
 
-# Time (in s) to wait in between waking up each destination, i.e. one destination
+# Time to wait in between waking up each destination, i.e. one destination
 # will be woken up every <x> seconds until we have woken every destination
 # has outstanding catch-up.
-WAKEUP_INTERVAL_BETWEEN_DESTINATIONS_SEC = 5
+WAKEUP_INTERVAL_BETWEEN_DESTINATIONS = Duration(seconds=5)
 
 
 class AbstractFederationSender(metaclass=abc.ABCMeta):
@@ -266,7 +266,7 @@ class AbstractFederationSender(metaclass=abc.ABCMeta):
         destination: str,
         edu_type: str,
         content: JsonDict,
-        key: Optional[Hashable] = None,
+        key: Hashable | None = None,
     ) -> None:
         """Construct an Edu object, and queue it for sending
 
@@ -380,7 +380,7 @@ class _DestinationWakeupQueue:
 
                 queue.attempt_new_transaction()
 
-                await self.clock.sleep(current_sleep_seconds)
+                await self.clock.sleep(Duration(seconds=current_sleep_seconds))
 
                 if not self.queue:
                     break
@@ -410,7 +410,7 @@ class FederationSender(AbstractFederationSender):
         self.is_mine_id = hs.is_mine_id
         self.is_mine_server_name = hs.is_mine_server_name
 
-        self._presence_router: Optional["PresenceRouter"] = None
+        self._presence_router: "PresenceRouter" | None = None
         self._transaction_manager = TransactionManager(hs)
 
         self._instance_name = hs.get_instance_name()
@@ -469,7 +469,7 @@ class FederationSender(AbstractFederationSender):
         # Regularly wake up destinations that have outstanding PDUs to be caught up
         self.clock.looping_call_now(
             self.hs.run_as_background_process,
-            WAKEUP_RETRY_PERIOD_SEC * 1000.0,
+            WAKEUP_RETRY_PERIOD,
             "wake_destinations_needing_catchup",
             self._wake_destinations_needing_catchup,
         )
@@ -481,7 +481,7 @@ class FederationSender(AbstractFederationSender):
 
     def _get_per_destination_queue(
         self, destination: str
-    ) -> Optional[PerDestinationQueue]:
+    ) -> PerDestinationQueue | None:
         """Get or create a PerDestinationQueue for the given destination
 
         Args:
@@ -605,7 +605,7 @@ class FederationSender(AbstractFederationSender):
                         )
                         return
 
-                    destinations: Optional[Collection[str]] = None
+                    destinations: Collection[str] | None = None
                     if not event.prev_event_ids():
                         # If there are no prev event IDs then the state is empty
                         # and so no remote servers in the room
@@ -1010,7 +1010,7 @@ class FederationSender(AbstractFederationSender):
         destination: str,
         edu_type: str,
         content: JsonDict,
-        key: Optional[Hashable] = None,
+        key: Hashable | None = None,
     ) -> None:
         """Construct an Edu object, and queue it for sending
 
@@ -1038,7 +1038,7 @@ class FederationSender(AbstractFederationSender):
 
         self.send_edu(edu, key)
 
-    def send_edu(self, edu: Edu, key: Optional[Hashable]) -> None:
+    def send_edu(self, edu: Edu, key: Hashable | None) -> None:
         """Queue an EDU for sending
 
         Args:
@@ -1134,7 +1134,7 @@ class FederationSender(AbstractFederationSender):
         In order to reduce load spikes, adds a delay between each destination.
         """
 
-        last_processed: Optional[str] = None
+        last_processed: str | None = None
 
         while not self._is_shutdown:
             destinations_to_wake = (
@@ -1162,4 +1162,4 @@ class FederationSender(AbstractFederationSender):
                     last_processed,
                 )
                 self.wake_destination(destination)
-                await self.clock.sleep(WAKEUP_INTERVAL_BETWEEN_DESTINATIONS_SEC)
+                await self.clock.sleep(WAKEUP_INTERVAL_BETWEEN_DESTINATIONS)

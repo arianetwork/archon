@@ -36,9 +36,7 @@ from typing import (
     Iterable,
     Iterator,
     MutableMapping,
-    Optional,
     TypeVar,
-    Union,
 )
 
 import attr
@@ -46,6 +44,7 @@ import jinja2
 import yaml
 
 from synapse.types import StrSequence
+from synapse.util.stringutils import parse_and_validate_server_name
 from synapse.util.templates import _create_mxc_to_http_filter, _format_ts_filter
 
 logger = logging.getLogger(__name__)
@@ -60,7 +59,7 @@ class ConfigError(Exception):
            the problem lies.
     """
 
-    def __init__(self, msg: str, path: Optional[StrSequence] = None):
+    def __init__(self, msg: str, path: StrSequence | None = None):
         self.msg = msg
         self.path = path
 
@@ -175,7 +174,7 @@ class Config:
         )
 
     @staticmethod
-    def parse_size(value: Union[str, int]) -> int:
+    def parse_size(value: str | int) -> int:
         """Interpret `value` as a number of bytes.
 
         If an integer is provided it is treated as bytes and is unchanged.
@@ -202,7 +201,7 @@ class Config:
             raise TypeError(f"Bad byte size {value!r}")
 
     @staticmethod
-    def parse_duration(value: Union[str, int]) -> int:
+    def parse_duration(value: str | int) -> int:
         """Convert a duration as a string or integer to a number of milliseconds.
 
         If an integer is provided it is treated as milliseconds and is unchanged.
@@ -270,7 +269,7 @@ class Config:
         return path_exists(file_path)
 
     @classmethod
-    def check_file(cls, file_path: Optional[str], config_name: str) -> str:
+    def check_file(cls, file_path: str | None, config_name: str) -> str:
         if file_path is None:
             raise ConfigError("Missing config for %s." % (config_name,))
         try:
@@ -318,7 +317,7 @@ class Config:
     def read_templates(
         self,
         filenames: list[str],
-        custom_template_directories: Optional[Iterable[str]] = None,
+        custom_template_directories: Iterable[str] | None = None,
     ) -> list[jinja2.Template]:
         """Load a list of template files from disk using the given variables.
 
@@ -465,11 +464,12 @@ class RootConfig:
         data_dir_path: str,
         server_name: str,
         generate_secrets: bool = False,
-        report_stats: Optional[bool] = None,
+        report_stats: bool | None = None,
         open_private_ports: bool = False,
-        listeners: Optional[list[dict]] = None,
-        tls_certificate_path: Optional[str] = None,
-        tls_private_key_path: Optional[str] = None,
+        enable_metrics: bool = False,
+        listeners: list[dict] | None = None,
+        tls_certificate_path: str | None = None,
+        tls_private_key_path: str | None = None,
     ) -> str:
         """
         Build a default configuration file
@@ -497,9 +497,15 @@ class RootConfig:
             open_private_ports: True to leave private ports (such as the non-TLS
                 HTTP listener) open to the internet.
 
+            enable_metrics: True to set `enable_metrics: true` and when using the
+                default set of listeners, will also add the metrics listener on port 19090.
+
             listeners: A list of descriptions of the listeners synapse should
-                start with each of which specifies a port (int), a list of
-                resources (list(str)), tls (bool) and type (str). For example:
+                start with each of which specifies a port (int), a list of resources
+                (list(str)), tls (bool) and type (str). There is a default set of
+                listeners when `None`.
+
+                Example usage:
                 [{
                     "port": 8448,
                     "resources": [{"names": ["federation"]}],
@@ -520,6 +526,35 @@ class RootConfig:
         Returns:
             The yaml config file
         """
+        _, bind_port = parse_and_validate_server_name(server_name)
+        if bind_port is not None:
+            unsecure_port = bind_port - 400
+        else:
+            bind_port = 8448
+            unsecure_port = 8008
+
+        # The default listeners
+        if listeners is None:
+            listeners = [
+                {
+                    "port": unsecure_port,
+                    "tls": False,
+                    "type": "http",
+                    "x_forwarded": True,
+                    "resources": [
+                        {"names": ["client", "federation"], "compress": False}
+                    ],
+                }
+            ]
+
+            if enable_metrics:
+                listeners.append(
+                    {
+                        "port": 19090,
+                        "tls": False,
+                        "type": "metrics",
+                    }
+                )
 
         conf = CONFIG_FILE_HEADER + "\n".join(
             dedent(conf)
@@ -531,6 +566,7 @@ class RootConfig:
                 generate_secrets=generate_secrets,
                 report_stats=report_stats,
                 open_private_ports=open_private_ports,
+                enable_metrics=enable_metrics,
                 listeners=listeners,
                 tls_certificate_path=tls_certificate_path,
                 tls_private_key_path=tls_private_key_path,
@@ -655,7 +691,7 @@ class RootConfig:
     @classmethod
     def load_or_generate_config(
         cls: type[TRootConfig], description: str, argv_options: list[str]
-    ) -> Optional[TRootConfig]:
+    ) -> TRootConfig | None:
         """Parse the commandline and config files
 
         Supports generation of config files, so is used for the main homeserver app.
@@ -674,7 +710,8 @@ class RootConfig:
             action="append",
             metavar="CONFIG_FILE",
             help="Specify config file. Can be given multiple times and"
-            " may specify directories containing *.yaml files.",
+            " may specify directories containing *.yaml files."
+            " Top-level keys in later files overwrite ones in earlier files.",
         )
         parser.add_argument(
             "--no-secrets-in-config",
@@ -757,6 +794,14 @@ class RootConfig:
                 " internet. Do not use this unless you know what you are doing."
             ),
         )
+        generate_group.add_argument(
+            "--enable-metrics",
+            action="store_true",
+            help=(
+                "Sets `enable_metrics: true` and when using the default set of listeners, "
+                "will also add the metrics listener on port 19090."
+            ),
+        )
 
         cls.invoke_all_static("add_arguments", parser)
         config_args = parser.parse_args(argv_options)
@@ -813,6 +858,7 @@ class RootConfig:
                     report_stats=(config_args.report_stats == "yes"),
                     generate_secrets=True,
                     open_private_ports=config_args.open_private_ports,
+                    enable_metrics=config_args.enable_metrics,
                 )
 
                 os.makedirs(config_dir_path, exist_ok=True)
@@ -898,7 +944,7 @@ class RootConfig:
         :returns: the previous config object, which no longer has a reference to this
             RootConfig.
         """
-        existing_config: Optional[Config] = getattr(self, section_name, None)
+        existing_config: Config | None = getattr(self, section_name, None)
         if existing_config is None:
             raise ValueError(f"Unknown config section '{section_name}'")
         logger.info("Reloading config section '%s'", section_name)

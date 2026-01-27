@@ -28,6 +28,7 @@ from synapse.types import JsonDict
 from synapse.util.clock import Clock
 
 from tests import unittest
+from tests.server import FakeChannel
 from tests.unittest import HomeserverTestCase
 
 PATH_PREFIX = "/_matrix/client/unstable/org.matrix.msc4140/delayed_events"
@@ -127,6 +128,10 @@ class DelayedEventsTestCase(HomeserverTestCase):
         )
         self.assertEqual(setter_expected, content.get(setter_key), content)
 
+    def test_get_delayed_events_auth(self) -> None:
+        channel = self.make_request("GET", PATH_PREFIX)
+        self.assertEqual(HTTPStatus.UNAUTHORIZED, channel.code, channel.result)
+
     @unittest.override_config(
         {"rc_delayed_event_mgmt": {"per_second": 0.5, "burst_count": 1}}
     )
@@ -154,7 +159,6 @@ class DelayedEventsTestCase(HomeserverTestCase):
         channel = self.make_request(
             "POST",
             f"{PATH_PREFIX}/",
-            access_token=self.user1_access_token,
         )
         self.assertEqual(HTTPStatus.NOT_FOUND, channel.code, channel.result)
 
@@ -162,7 +166,6 @@ class DelayedEventsTestCase(HomeserverTestCase):
         channel = self.make_request(
             "POST",
             f"{PATH_PREFIX}/abc",
-            access_token=self.user1_access_token,
         )
         self.assertEqual(HTTPStatus.BAD_REQUEST, channel.code, channel.result)
         self.assertEqual(
@@ -175,7 +178,6 @@ class DelayedEventsTestCase(HomeserverTestCase):
             "POST",
             f"{PATH_PREFIX}/abc",
             {},
-            self.user1_access_token,
         )
         self.assertEqual(HTTPStatus.BAD_REQUEST, channel.code, channel.result)
         self.assertEqual(
@@ -188,7 +190,6 @@ class DelayedEventsTestCase(HomeserverTestCase):
             "POST",
             f"{PATH_PREFIX}/abc",
             {"action": "oops"},
-            self.user1_access_token,
         )
         self.assertEqual(HTTPStatus.BAD_REQUEST, channel.code, channel.result)
         self.assertEqual(
@@ -196,17 +197,21 @@ class DelayedEventsTestCase(HomeserverTestCase):
             channel.json_body["errcode"],
         )
 
-    @parameterized.expand(["cancel", "restart", "send"])
-    def test_update_delayed_event_without_match(self, action: str) -> None:
-        channel = self.make_request(
-            "POST",
-            f"{PATH_PREFIX}/abc",
-            {"action": action},
-            self.user1_access_token,
+    @parameterized.expand(
+        (
+            (action, action_in_path)
+            for action in ("cancel", "restart", "send")
+            for action_in_path in (True, False)
         )
+    )
+    def test_update_delayed_event_without_match(
+        self, action: str, action_in_path: bool
+    ) -> None:
+        channel = self._update_delayed_event("abc", action, action_in_path)
         self.assertEqual(HTTPStatus.NOT_FOUND, channel.code, channel.result)
 
-    def test_cancel_delayed_state_event(self) -> None:
+    @parameterized.expand((True, False))
+    def test_cancel_delayed_state_event(self, action_in_path: bool) -> None:
         state_key = "to_never_send"
 
         setter_key = "setter"
@@ -221,7 +226,7 @@ class DelayedEventsTestCase(HomeserverTestCase):
         )
         self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
         delay_id = channel.json_body.get("delay_id")
-        self.assertIsNotNone(delay_id)
+        assert delay_id is not None
 
         self.reactor.advance(1)
         events = self._get_delayed_events()
@@ -236,12 +241,7 @@ class DelayedEventsTestCase(HomeserverTestCase):
             expect_code=HTTPStatus.NOT_FOUND,
         )
 
-        channel = self.make_request(
-            "POST",
-            f"{PATH_PREFIX}/{delay_id}",
-            {"action": "cancel"},
-            self.user1_access_token,
-        )
+        channel = self._update_delayed_event(delay_id, "cancel", action_in_path)
         self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
         self.assertListEqual([], self._get_delayed_events())
 
@@ -254,10 +254,11 @@ class DelayedEventsTestCase(HomeserverTestCase):
             expect_code=HTTPStatus.NOT_FOUND,
         )
 
+    @parameterized.expand((True, False))
     @unittest.override_config(
         {"rc_delayed_event_mgmt": {"per_second": 0.5, "burst_count": 1}}
     )
-    def test_cancel_delayed_event_ratelimit(self) -> None:
+    def test_cancel_delayed_event_ratelimit(self, action_in_path: bool) -> None:
         delay_ids = []
         for _ in range(2):
             channel = self.make_request(
@@ -268,59 +269,45 @@ class DelayedEventsTestCase(HomeserverTestCase):
             )
             self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
             delay_id = channel.json_body.get("delay_id")
-            self.assertIsNotNone(delay_id)
+            assert delay_id is not None
             delay_ids.append(delay_id)
 
-        channel = self.make_request(
-            "POST",
-            f"{PATH_PREFIX}/{delay_ids.pop(0)}",
-            {"action": "cancel"},
-            self.user1_access_token,
-        )
+        channel = self._update_delayed_event(delay_ids.pop(0), "cancel", action_in_path)
         self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
 
-        args = (
-            "POST",
-            f"{PATH_PREFIX}/{delay_ids.pop(0)}",
-            {"action": "cancel"},
-            self.user1_access_token,
-        )
-        channel = self.make_request(*args)
+        channel = self._update_delayed_event(delay_ids.pop(0), "cancel", action_in_path)
         self.assertEqual(HTTPStatus.TOO_MANY_REQUESTS, channel.code, channel.result)
 
-        # Add the current user to the ratelimit overrides, allowing them no ratelimiting.
-        self.get_success(
-            self.hs.get_datastores().main.set_ratelimit_for_user(
-                self.user1_user_id, 0, 0
-            )
+    @parameterized.expand(
+        (
+            (content_property_value, action_in_path)
+            for content_property_value in ("test", "tест")
+            for action_in_path in (True, False)
         )
-
-        # Test that the request isn't ratelimited anymore.
-        channel = self.make_request(*args)
-        self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
-
-    def test_send_delayed_state_event(self) -> None:
+    )
+    def test_send_delayed_state_event(
+        self, content_value: str, action_in_path: bool
+    ) -> None:
         state_key = "to_send_on_request"
 
-        setter_key = "setter"
-        setter_expected = "on_send"
+        content_property_name = "key"
         channel = self.make_request(
             "PUT",
             _get_path_for_delayed_state(self.room_id, _EVENT_TYPE, state_key, 100000),
             {
-                setter_key: setter_expected,
+                content_property_name: content_value,
             },
             self.user1_access_token,
         )
         self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
         delay_id = channel.json_body.get("delay_id")
-        self.assertIsNotNone(delay_id)
+        assert delay_id is not None
 
         self.reactor.advance(1)
         events = self._get_delayed_events()
         self.assertEqual(1, len(events), events)
         content = self._get_delayed_event_content(events[0])
-        self.assertEqual(setter_expected, content.get(setter_key), content)
+        self.assertEqual(content_value, content.get(content_property_name), content)
         self.helper.get_state(
             self.room_id,
             _EVENT_TYPE,
@@ -329,12 +316,7 @@ class DelayedEventsTestCase(HomeserverTestCase):
             expect_code=HTTPStatus.NOT_FOUND,
         )
 
-        channel = self.make_request(
-            "POST",
-            f"{PATH_PREFIX}/{delay_id}",
-            {"action": "send"},
-            self.user1_access_token,
-        )
+        channel = self._update_delayed_event(delay_id, "send", action_in_path)
         self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
         self.assertListEqual([], self._get_delayed_events())
         content = self.helper.get_state(
@@ -343,10 +325,11 @@ class DelayedEventsTestCase(HomeserverTestCase):
             self.user1_access_token,
             state_key=state_key,
         )
-        self.assertEqual(setter_expected, content.get(setter_key), content)
+        self.assertEqual(content_value, content.get(content_property_name), content)
 
-    @unittest.override_config({"rc_message": {"per_second": 3.5, "burst_count": 4}})
-    def test_send_delayed_event_ratelimit(self) -> None:
+    @parameterized.expand((True, False))
+    @unittest.override_config({"rc_message": {"per_second": 2.5, "burst_count": 3}})
+    def test_send_delayed_event_ratelimit(self, action_in_path: bool) -> None:
         delay_ids = []
         for _ in range(2):
             channel = self.make_request(
@@ -357,38 +340,17 @@ class DelayedEventsTestCase(HomeserverTestCase):
             )
             self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
             delay_id = channel.json_body.get("delay_id")
-            self.assertIsNotNone(delay_id)
+            assert delay_id is not None
             delay_ids.append(delay_id)
 
-        channel = self.make_request(
-            "POST",
-            f"{PATH_PREFIX}/{delay_ids.pop(0)}",
-            {"action": "send"},
-            self.user1_access_token,
-        )
+        channel = self._update_delayed_event(delay_ids.pop(0), "send", action_in_path)
         self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
 
-        args = (
-            "POST",
-            f"{PATH_PREFIX}/{delay_ids.pop(0)}",
-            {"action": "send"},
-            self.user1_access_token,
-        )
-        channel = self.make_request(*args)
+        channel = self._update_delayed_event(delay_ids.pop(0), "send", action_in_path)
         self.assertEqual(HTTPStatus.TOO_MANY_REQUESTS, channel.code, channel.result)
 
-        # Add the current user to the ratelimit overrides, allowing them no ratelimiting.
-        self.get_success(
-            self.hs.get_datastores().main.set_ratelimit_for_user(
-                self.user1_user_id, 0, 0
-            )
-        )
-
-        # Test that the request isn't ratelimited anymore.
-        channel = self.make_request(*args)
-        self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
-
-    def test_restart_delayed_state_event(self) -> None:
+    @parameterized.expand((True, False))
+    def test_restart_delayed_state_event(self, action_in_path: bool) -> None:
         state_key = "to_send_on_restarted_timeout"
 
         setter_key = "setter"
@@ -403,7 +365,7 @@ class DelayedEventsTestCase(HomeserverTestCase):
         )
         self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
         delay_id = channel.json_body.get("delay_id")
-        self.assertIsNotNone(delay_id)
+        assert delay_id is not None
 
         self.reactor.advance(1)
         events = self._get_delayed_events()
@@ -418,12 +380,7 @@ class DelayedEventsTestCase(HomeserverTestCase):
             expect_code=HTTPStatus.NOT_FOUND,
         )
 
-        channel = self.make_request(
-            "POST",
-            f"{PATH_PREFIX}/{delay_id}",
-            {"action": "restart"},
-            self.user1_access_token,
-        )
+        channel = self._update_delayed_event(delay_id, "restart", action_in_path)
         self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
 
         self.reactor.advance(1)
@@ -449,10 +406,11 @@ class DelayedEventsTestCase(HomeserverTestCase):
         )
         self.assertEqual(setter_expected, content.get(setter_key), content)
 
+    @parameterized.expand((True, False))
     @unittest.override_config(
         {"rc_delayed_event_mgmt": {"per_second": 0.5, "burst_count": 1}}
     )
-    def test_restart_delayed_event_ratelimit(self) -> None:
+    def test_restart_delayed_event_ratelimit(self, action_in_path: bool) -> None:
         delay_ids = []
         for _ in range(2):
             channel = self.make_request(
@@ -463,36 +421,18 @@ class DelayedEventsTestCase(HomeserverTestCase):
             )
             self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
             delay_id = channel.json_body.get("delay_id")
-            self.assertIsNotNone(delay_id)
+            assert delay_id is not None
             delay_ids.append(delay_id)
 
-        channel = self.make_request(
-            "POST",
-            f"{PATH_PREFIX}/{delay_ids.pop(0)}",
-            {"action": "restart"},
-            self.user1_access_token,
+        channel = self._update_delayed_event(
+            delay_ids.pop(0), "restart", action_in_path
         )
         self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
 
-        args = (
-            "POST",
-            f"{PATH_PREFIX}/{delay_ids.pop(0)}",
-            {"action": "restart"},
-            self.user1_access_token,
+        channel = self._update_delayed_event(
+            delay_ids.pop(0), "restart", action_in_path
         )
-        channel = self.make_request(*args)
         self.assertEqual(HTTPStatus.TOO_MANY_REQUESTS, channel.code, channel.result)
-
-        # Add the current user to the ratelimit overrides, allowing them no ratelimiting.
-        self.get_success(
-            self.hs.get_datastores().main.set_ratelimit_for_user(
-                self.user1_user_id, 0, 0
-            )
-        )
-
-        # Test that the request isn't ratelimited anymore.
-        channel = self.make_request(*args)
-        self.assertEqual(HTTPStatus.OK, channel.code, channel.result)
 
     def test_delayed_state_is_not_cancelled_by_new_state_from_same_user(
         self,
@@ -597,6 +537,17 @@ class DelayedEventsTestCase(HomeserverTestCase):
         self.assertIsInstance(content, dict)
 
         return content
+
+    def _update_delayed_event(
+        self, delay_id: str, action: str, action_in_path: bool
+    ) -> FakeChannel:
+        path = f"{PATH_PREFIX}/{delay_id}"
+        body = {}
+        if action_in_path:
+            path += f"/{action}"
+        else:
+            body["action"] = action
+        return self.make_request("POST", path, body)
 
 
 def _get_path_for_delayed_state(

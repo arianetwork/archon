@@ -20,7 +20,7 @@
 #
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from synapse.api.constants import (
     AccountDataTypes,
@@ -49,7 +49,7 @@ from synapse.types import (
 from synapse.util import unwrapFirstError
 from synapse.util.async_helpers import concurrently_execute, gather_results
 from synapse.util.caches.response_cache import ResponseCache
-from synapse.visibility import filter_events_for_client
+from synapse.visibility import filter_and_transform_events_for_client
 
 if TYPE_CHECKING:
     from synapse.server import HomeServer
@@ -71,8 +71,8 @@ class InitialSyncHandler:
         self.snapshot_cache: ResponseCache[
             tuple[
                 str,
-                Optional[StreamToken],
-                Optional[StreamToken],
+                StreamToken | None,
+                StreamToken | None,
                 Direction,
                 int,
                 bool,
@@ -225,7 +225,7 @@ class InitialSyncHandler:
                     )
                 ).addErrback(unwrapFirstError)
 
-                messages = await filter_events_for_client(
+                messages = await filter_and_transform_events_for_client(
                     self._storage_controllers,
                     user_id,
                     messages,
@@ -382,7 +382,7 @@ class InitialSyncHandler:
             room_id, limit=pagin_config.limit, end_token=stream_token
         )
 
-        messages = await filter_events_for_client(
+        messages = await filter_and_transform_events_for_client(
             self._storage_controllers,
             requester.user.to_string(),
             messages,
@@ -496,7 +496,7 @@ class InitialSyncHandler:
             ).addErrback(unwrapFirstError)
         )
 
-        messages = await filter_events_for_client(
+        messages = await filter_and_transform_events_for_client(
             self._storage_controllers,
             requester.user.to_string(),
             messages,

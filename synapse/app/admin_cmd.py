@@ -136,7 +136,7 @@ class FileExfiltrationWriter(ExfiltrationWriter):
             to a temporary directory.
     """
 
-    def __init__(self, user_id: str, directory: Optional[str] = None):
+    def __init__(self, user_id: str, directory: str | None = None):
         self.user_id = user_id
 
         if directory:

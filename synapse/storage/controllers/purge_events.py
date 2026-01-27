@@ -25,7 +25,6 @@ from typing import (
     TYPE_CHECKING,
     Collection,
     Mapping,
-    Optional,
 )
 
 from synapse.logging.context import nested_logging_context
@@ -33,6 +32,7 @@ from synapse.metrics.background_process_metrics import wrap_as_background_proces
 from synapse.storage.database import LoggingTransaction
 from synapse.storage.databases import Databases
 from synapse.types.storage import _BackgroundUpdates
+from synapse.util.duration import Duration
 from synapse.util.stringutils import shortstr
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ class PurgeEventsStorageController:
 
         if hs.config.worker.run_background_tasks:
             self._delete_state_loop_call = hs.get_clock().looping_call(
-                self._delete_state_groups_loop, 60 * 1000
+                self._delete_state_groups_loop, Duration(minutes=1)
             )
 
         self.stores.state.db_pool.updates.register_background_update_handler(
@@ -445,7 +445,7 @@ class PurgeEventsStorageController:
 
         # Remove state groups from deletion_candidates which are directly referenced or share a
         # future edge with a referenced state group within this batch.
-        def filter_reference_chains(group: Optional[int]) -> None:
+        def filter_reference_chains(group: int | None) -> None:
             while group is not None:
                 deletion_candidates.discard(group)
                 group = state_group_edges.get(group)

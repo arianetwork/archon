@@ -25,7 +25,6 @@ from typing import (
     TYPE_CHECKING,
     Collection,
     Iterable,
-    Optional,
     cast,
 )
 
@@ -49,9 +48,9 @@ from synapse.storage.database import (
 )
 from synapse.storage.util.id_generators import MultiWriterIdGenerator
 from synapse.types import JsonDict, StrCollection
-from synapse.util import Duration
 from synapse.util.caches.expiringcache import ExpiringCache
 from synapse.util.caches.stream_change_cache import StreamChangeCache
+from synapse.util.duration import Duration
 from synapse.util.iterutils import batch_iter
 from synapse.util.json import json_encoder
 from synapse.util.stringutils import parse_and_validate_server_name
@@ -63,10 +62,10 @@ logger = logging.getLogger(__name__)
 
 
 # How long to keep messages in the device federation inbox before deleting them.
-DEVICE_FEDERATION_INBOX_CLEANUP_DELAY_MS = 7 * Duration.DAY_MS
+DEVICE_FEDERATION_INBOX_CLEANUP_DELAY = Duration(days=7)
 
 # How often to run the task to clean up old device_federation_inbox rows.
-DEVICE_FEDERATION_INBOX_CLEANUP_INTERVAL_MS = 5 * Duration.MINUTE_MS
+DEVICE_FEDERATION_INBOX_CLEANUP_INTERVAL = Duration(minutes=5)
 
 # Update name for the device federation inbox received timestamp index.
 DEVICE_FEDERATION_INBOX_RECEIVED_INDEX_UPDATE = (
@@ -87,15 +86,15 @@ class DeviceInboxWorkerStore(SQLBaseStore):
 
         # Map of (user_id, device_id) to the last stream_id that has been
         # deleted up to. This is so that we can no op deletions.
-        self._last_device_delete_cache: ExpiringCache[
-            tuple[str, Optional[str]], int
-        ] = ExpiringCache(
-            cache_name="last_device_delete_cache",
-            server_name=self.server_name,
-            hs=hs,
-            clock=self.clock,
-            max_len=10000,
-            expiry_ms=30 * 60 * 1000,
+        self._last_device_delete_cache: ExpiringCache[tuple[str, str | None], int] = (
+            ExpiringCache(
+                cache_name="last_device_delete_cache",
+                server_name=self.server_name,
+                hs=hs,
+                clock=self.clock,
+                max_len=10000,
+                expiry_ms=30 * 60 * 1000,
+            )
         )
 
         self._can_write_to_device = (
@@ -153,7 +152,7 @@ class DeviceInboxWorkerStore(SQLBaseStore):
         if hs.config.worker.run_background_tasks:
             self.clock.looping_call(
                 run_as_background_process,
-                DEVICE_FEDERATION_INBOX_CLEANUP_INTERVAL_MS,
+                DEVICE_FEDERATION_INBOX_CLEANUP_INTERVAL,
                 "_delete_old_federation_inbox_rows",
                 self.server_name,
                 self._delete_old_federation_inbox_rows,
@@ -469,7 +468,7 @@ class DeviceInboxWorkerStore(SQLBaseStore):
     async def delete_messages_for_device(
         self,
         user_id: str,
-        device_id: Optional[str],
+        device_id: str | None,
         up_to_stream_id: int,
     ) -> int:
         """
@@ -527,11 +526,11 @@ class DeviceInboxWorkerStore(SQLBaseStore):
     async def delete_messages_for_device_between(
         self,
         user_id: str,
-        device_id: Optional[str],
-        from_stream_id: Optional[int],
+        device_id: str | None,
+        from_stream_id: int | None,
         to_stream_id: int,
         limit: int,
-    ) -> tuple[Optional[int], int]:
+    ) -> tuple[int | None, int]:
         """Delete N device messages between the stream IDs, returning the
         highest stream ID deleted (or None if all messages in the range have
         been deleted) and the number of messages deleted.
@@ -551,7 +550,7 @@ class DeviceInboxWorkerStore(SQLBaseStore):
 
         def delete_messages_for_device_between_txn(
             txn: LoggingTransaction,
-        ) -> tuple[Optional[int], int]:
+        ) -> tuple[int | None, int]:
             txn.execute(
                 """
                 SELECT MAX(stream_id) FROM (
@@ -997,9 +996,10 @@ class DeviceInboxWorkerStore(SQLBaseStore):
 
         def _delete_old_federation_inbox_rows_txn(txn: LoggingTransaction) -> bool:
             # We delete at most 100 rows that are older than
-            # DEVICE_FEDERATION_INBOX_CLEANUP_DELAY_MS
+            # DEVICE_FEDERATION_INBOX_CLEANUP_DELAY
             delete_before_ts = (
-                self.clock.time_msec() - DEVICE_FEDERATION_INBOX_CLEANUP_DELAY_MS
+                self.clock.time_msec()
+                - DEVICE_FEDERATION_INBOX_CLEANUP_DELAY.as_millis()
             )
             sql = """
                 WITH to_delete AS (
@@ -1029,7 +1029,7 @@ class DeviceInboxWorkerStore(SQLBaseStore):
 
             # We sleep a bit so that we don't hammer the database in a tight
             # loop first time we run this.
-            await self.clock.sleep(1)
+            await self.clock.sleep(Duration(seconds=1))
 
     async def get_devices_with_messages(
         self, user_id: str, device_ids: StrCollection
@@ -1147,7 +1147,7 @@ class DeviceInboxBackgroundUpdateStore(SQLBaseStore):
                 # There's a type mismatch here between how we want to type the row and
                 # what fetchone says it returns, but we silence it because we know that
                 # res can't be None.
-                res = cast(tuple[Optional[int]], txn.fetchone())
+                res = cast(tuple[int | None], txn.fetchone())
                 if res[0] is None:
                     # this can only happen if the `device_inbox` table is empty, in which
                     # case we have no work to do.
@@ -1210,7 +1210,7 @@ class DeviceInboxBackgroundUpdateStore(SQLBaseStore):
                 max_stream_id = progress["max_stream_id"]
             else:
                 txn.execute("SELECT max(stream_id) FROM device_federation_outbox")
-                res = cast(tuple[Optional[int]], txn.fetchone())
+                res = cast(tuple[int | None], txn.fetchone())
                 if res[0] is None:
                     # this can only happen if the `device_inbox` table is empty, in which
                     # case we have no work to do.

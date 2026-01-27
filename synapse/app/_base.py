@@ -37,13 +37,12 @@ from typing import (
     Callable,
     NoReturn,
     Optional,
-    Union,
     cast,
 )
 from wsgiref.simple_server import WSGIServer
 
 from cryptography.utils import CryptographyDeprecationWarning
-from typing_extensions import ParamSpec
+from typing_extensions import ParamSpec, assert_never
 
 import twisted
 from twisted.internet import defer, error, reactor as _reactor
@@ -61,12 +60,17 @@ from twisted.python.threadpool import ThreadPool
 from twisted.web.resource import Resource
 
 import synapse.util.caches
-from synapse.api.constants import MAX_PDU_SIZE
+from synapse.api.constants import MAX_REQUEST_SIZE
 from synapse.app import check_bind_error
 from synapse.config import ConfigError
 from synapse.config._base import format_config_error
 from synapse.config.homeserver import HomeServerConfig
-from synapse.config.server import ListenerConfig, ManholeConfig, TCPListenerConfig
+from synapse.config.server import (
+    ListenerConfig,
+    ManholeConfig,
+    TCPListenerConfig,
+    UnixListenerConfig,
+)
 from synapse.crypto import context_factory
 from synapse.events.auto_accept_invites import InviteAutoAccepter
 from synapse.events.presence_router import load_legacy_presence_router
@@ -180,8 +184,8 @@ def start_worker_reactor(
 def start_reactor(
     appname: str,
     soft_file_limit: int,
-    gc_thresholds: Optional[tuple[int, int, int]],
-    pid_file: Optional[str],
+    gc_thresholds: tuple[int, int, int] | None,
+    pid_file: str | None,
     daemonize: bool,
     print_pidfile: bool,
     logger: logging.Logger,
@@ -415,6 +419,37 @@ def listen_unix(
     ]
 
 
+class ListenerException(RuntimeError):
+    """
+    An exception raised when we fail to listen with the given `ListenerConfig`.
+
+    Attributes:
+        listener_config: The listener config that caused the exception.
+    """
+
+    def __init__(
+        self,
+        listener_config: ListenerConfig,
+    ):
+        listener_human_name = ""
+        port = ""
+        if isinstance(listener_config, TCPListenerConfig):
+            listener_human_name = "TCP port"
+            port = str(listener_config.port)
+        elif isinstance(listener_config, UnixListenerConfig):
+            listener_human_name = "unix socket"
+            port = listener_config.path
+        else:
+            assert_never(listener_config)
+
+        super().__init__(
+            "Failed to listen on %s (%s) with the given listener config: %s"
+            % (listener_human_name, port, listener_config)
+        )
+
+        self.listener_config = listener_config
+
+
 def listen_http(
     hs: "HomeServer",
     listener_config: ListenerConfig,
@@ -449,39 +484,55 @@ def listen_http(
         hs=hs,
     )
 
-    if isinstance(listener_config, TCPListenerConfig):
-        if listener_config.is_tls():
-            # refresh_certificate should have been called before this.
-            assert context_factory is not None
-            ports = listen_ssl(
-                listener_config.bind_addresses,
-                listener_config.port,
-                site,
-                context_factory,
-                reactor=reactor,
+    try:
+        if isinstance(listener_config, TCPListenerConfig):
+            if listener_config.is_tls():
+                # refresh_certificate should have been called before this.
+                assert context_factory is not None
+                ports = listen_ssl(
+                    listener_config.bind_addresses,
+                    listener_config.port,
+                    site,
+                    context_factory,
+                    reactor=reactor,
+                )
+                logger.info(
+                    "Synapse now listening on TCP port %d (TLS)", listener_config.port
+                )
+            else:
+                ports = listen_tcp(
+                    listener_config.bind_addresses,
+                    listener_config.port,
+                    site,
+                    reactor=reactor,
+                )
+                logger.info(
+                    "Synapse now listening on TCP port %d", listener_config.port
+                )
+
+        elif isinstance(listener_config, UnixListenerConfig):
+            ports = listen_unix(
+                listener_config.path, listener_config.mode, site, reactor=reactor
             )
+            # getHost() returns a UNIXAddress which contains an instance variable of 'name'
+            # encoded as a byte string. Decode as utf-8 so pretty.
             logger.info(
-                "Synapse now listening on TCP port %d (TLS)", listener_config.port
+                "Synapse now listening on Unix Socket at: %s",
+                ports[0].getHost().name.decode("utf-8"),
             )
         else:
-            ports = listen_tcp(
-                listener_config.bind_addresses,
-                listener_config.port,
-                site,
-                reactor=reactor,
-            )
-            logger.info("Synapse now listening on TCP port %d", listener_config.port)
-
-    else:
-        ports = listen_unix(
-            listener_config.path, listener_config.mode, site, reactor=reactor
-        )
-        # getHost() returns a UNIXAddress which contains an instance variable of 'name'
-        # encoded as a byte string. Decode as utf-8 so pretty.
-        logger.info(
-            "Synapse now listening on Unix Socket at: %s",
-            ports[0].getHost().name.decode("utf-8"),
-        )
+            assert_never(listener_config)
+    except Exception as exc:
+        # The Twisted interface says that "Users should not call this function
+        # themselves!" but this appears to be the correct/only way handle proper cleanup
+        # of the site when things go wrong. In the normal case, a `Port` is created
+        # which we can call `Port.stopListening()` on to do the same thing (but no
+        # `Port` is created when an error occurs).
+        #
+        # We use `site.stopFactory()` instead of `site.doStop()` as the latter assumes
+        # that `site.doStart()` was called (which won't be the case if an error occurs).
+        site.stopFactory()
+        raise ListenerException(listener_config) from exc
 
     return ports
 
@@ -564,9 +615,7 @@ def setup_sighup_handling() -> None:
     if _already_setup_sighup_handling:
         return
 
-    previous_sighup_handler: Union[
-        Callable[[int, Optional[FrameType]], Any], int, None
-    ] = None
+    previous_sighup_handler: Callable[[int, FrameType | None], Any] | int | None = None
 
     # Set up the SIGHUP machinery.
     if hasattr(signal, "SIGHUP"):
@@ -847,17 +896,8 @@ def sdnotify(state: bytes) -> None:
 def max_request_body_size(config: HomeServerConfig) -> int:
     """Get a suitable maximum size for incoming HTTP requests"""
 
-    # Other than media uploads, the biggest request we expect to see is a fully-loaded
-    # /federation/v1/send request.
-    #
-    # The main thing in such a request is up to 50 PDUs, and up to 100 EDUs. PDUs are
-    # limited to 65536 bytes (possibly slightly more if the sender didn't use canonical
-    # json encoding); there is no specced limit to EDUs (see
-    # https://github.com/matrix-org/matrix-doc/issues/3121).
-    #
-    # in short, we somewhat arbitrarily limit requests to 200 * 64K (about 12.5M)
-    #
-    max_request_size = config.worker.default_max_request_size or (200 * MAX_PDU_SIZE)
+    # Baseline default for any request that isn't configured in the homeserver config
+    max_request_size = MAX_REQUEST_SIZE
 
     # if we have a media repo enabled, we may need to allow larger uploads than that
     if config.media.can_load_media_repo:

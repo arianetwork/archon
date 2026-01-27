@@ -26,13 +26,13 @@ from typing import (
     Any,
     Counter as CounterType,
     Iterable,
-    Optional,
 )
 
 from synapse.api.constants import EventContentFields, EventTypes, Membership
 from synapse.metrics import SERVER_NAME_LABEL, event_processing_positions
 from synapse.storage.databases.main.state_deltas import StateDelta
 from synapse.types import JsonDict
+from synapse.util.duration import Duration
 from synapse.util.events import get_plain_text_topic_from_event_content
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ class StatsHandler:
         self.stats_enabled = hs.config.stats.stats_enabled
 
         # The current position in the current_state_delta stream
-        self.pos: Optional[int] = None
+        self.pos: int | None = None
 
         # Guard to ensure we only process deltas one at a time
         self._is_processing = False
@@ -73,7 +73,7 @@ class StatsHandler:
             # We kick this off so that we don't have to wait for a change before
             # we start populating stats
             self.clock.call_later(
-                0,
+                Duration(seconds=0),
                 self.notify_new_event,
             )
 

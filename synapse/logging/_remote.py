@@ -121,8 +121,8 @@ class RemoteHandler(logging.Handler):
         self.maximum_buffer = maximum_buffer
 
         self._buffer: deque[logging.LogRecord] = deque()
-        self._connection_waiter: Optional[Deferred] = None
-        self._producer: Optional[LogProducer] = None
+        self._connection_waiter: Deferred | None = None
+        self._producer: LogProducer | None = None
 
         # Connect without DNS lookups if it's a direct IP.
         if _reactor is None:

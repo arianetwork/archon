@@ -38,7 +38,7 @@ import io
 import json
 import sys
 from collections import defaultdict
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator
 
 import git
 from packaging import version
@@ -57,7 +57,7 @@ SCHEMA_VERSION_FILES = (
 OLDEST_SHOWN_VERSION = version.parse("v1.0")
 
 
-def get_schema_versions(tag: git.Tag) -> tuple[Optional[int], Optional[int]]:
+def get_schema_versions(tag: git.Tag) -> tuple[int | None, int | None]:
     """Get the schema and schema compat versions for a tag."""
     schema_version = None
     schema_compat_version = None
@@ -172,7 +172,7 @@ if __name__ == "__main__":
         # Expect JSON data on stdin.
         context, book = json.load(sys.stdin)
 
-        for section in book["sections"]:
+        for section in book["items"]:
             if "Chapter" in section and section["Chapter"]["path"] == "upgrade.md":
                 section["Chapter"]["content"] = section["Chapter"]["content"].replace(
                     "<!-- REPLACE_WITH_SCHEMA_VERSIONS -->", calculate_version_chart()

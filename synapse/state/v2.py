@@ -28,7 +28,6 @@ from typing import (
     Generator,
     Iterable,
     Literal,
-    Optional,
     Protocol,
     Sequence,
     overload,
@@ -41,6 +40,7 @@ from synapse.api.room_versions import RoomVersion, StateResolutionVersions
 from synapse.events import EventBase, is_creator
 from synapse.storage.databases.main.event_federation import StateDifference
 from synapse.types import MutableStateMap, StateMap, StrCollection
+from synapse.util.duration import Duration
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class Clock(Protocol):
     # This is usually synapse.util.Clock, but it's replaced with a FakeClock in tests.
     # We only ever sleep(0) though, so that other async functions can make forward
     # progress without waiting for stateres to complete.
-    async def sleep(self, duration_ms: float) -> None: ...
+    async def sleep(self, duration: Duration) -> None: ...
 
 
 class StateResolutionStore(Protocol):
@@ -63,8 +63,8 @@ class StateResolutionStore(Protocol):
         self,
         room_id: str,
         state_sets: list[set[str]],
-        conflicted_state: Optional[set[str]],
-        additional_backwards_reachable_conflicted_events: Optional[set[str]],
+        conflicted_state: set[str] | None,
+        additional_backwards_reachable_conflicted_events: set[str] | None,
     ) -> Awaitable[StateDifference]: ...
 
 
@@ -84,7 +84,7 @@ async def resolve_events_with_store(
     room_id: str,
     room_version: RoomVersion,
     state_sets: Sequence[StateMap[str]],
-    event_map: Optional[dict[str, EventBase]],
+    event_map: dict[str, EventBase] | None,
     state_res_store: StateResolutionStore,
 ) -> StateMap[str]:
     """Resolves the state using the v2 state resolution algorithm
@@ -124,7 +124,7 @@ async def resolve_events_with_store(
     logger.debug("%d conflicted state entries", len(conflicted_state))
     logger.debug("Calculating auth chain difference")
 
-    conflicted_set: Optional[set[str]] = None
+    conflicted_set: set[str] | None = None
     if room_version.state_res == StateResolutionVersions.V2_1:
         # calculate the conflicted subgraph
         conflicted_set = set(itertools.chain.from_iterable(conflicted_state.values()))
@@ -313,7 +313,7 @@ async def _get_auth_chain_difference(
     state_sets: Sequence[StateMap[str]],
     unpersisted_events: dict[str, EventBase],
     state_res_store: StateResolutionStore,
-    conflicted_state: Optional[set[str]],
+    conflicted_state: set[str] | None,
 ) -> set[str]:
     """Compare the auth chains of each state set and return the set of events
     that only appear in some, but not all of the auth chains.
@@ -546,7 +546,7 @@ def _seperate(
             conflicted_state[key] = event_ids
 
     # mypy doesn't understand that discarding None above means that conflicted
-    # state is StateMap[set[str]], not StateMap[set[Optional[Str]]].
+    # state is StateMap[set[str]], not StateMap[set[str | None]].
     return unconflicted_state, conflicted_state  # type: ignore[return-value]
 
 
@@ -640,7 +640,7 @@ async def _reverse_topological_power_sort(
         # We await occasionally when we're working with large data sets to
         # ensure that we don't block the reactor loop for too long.
         if idx % _AWAIT_AFTER_ITERATIONS == 0:
-            await clock.sleep(0)
+            await clock.sleep(Duration(seconds=0))
 
     event_to_pl = {}
     for idx, event_id in enumerate(graph, start=1):
@@ -652,7 +652,7 @@ async def _reverse_topological_power_sort(
         # We await occasionally when we're working with large data sets to
         # ensure that we don't block the reactor loop for too long.
         if idx % _AWAIT_AFTER_ITERATIONS == 0:
-            await clock.sleep(0)
+            await clock.sleep(Duration(seconds=0))
 
     def _get_power_order(event_id: str) -> tuple[int, int, str]:
         ev = event_map[event_id]
@@ -746,7 +746,7 @@ async def _iterative_auth_checks(
         # We await occasionally when we're working with large data sets to
         # ensure that we don't block the reactor loop for too long.
         if idx % _AWAIT_AFTER_ITERATIONS == 0:
-            await clock.sleep(0)
+            await clock.sleep(Duration(seconds=0))
 
     return resolved_state
 
@@ -755,7 +755,7 @@ async def _mainline_sort(
     clock: Clock,
     room_id: str,
     event_ids: list[str],
-    resolved_power_event_id: Optional[str],
+    resolved_power_event_id: str | None,
     event_map: dict[str, EventBase],
     state_res_store: StateResolutionStore,
 ) -> list[str]:
@@ -797,7 +797,7 @@ async def _mainline_sort(
         # We await occasionally when we're working with large data sets to
         # ensure that we don't block the reactor loop for too long.
         if idx != 0 and idx % _AWAIT_AFTER_ITERATIONS == 0:
-            await clock.sleep(0)
+            await clock.sleep(Duration(seconds=0))
 
         idx += 1
 
@@ -815,7 +815,7 @@ async def _mainline_sort(
         # We await occasionally when we're working with large data sets to
         # ensure that we don't block the reactor loop for too long.
         if idx % _AWAIT_AFTER_ITERATIONS == 0:
-            await clock.sleep(0)
+            await clock.sleep(Duration(seconds=0))
 
     event_ids.sort(key=lambda ev_id: order_map[ev_id])
 
@@ -842,7 +842,7 @@ async def _get_mainline_depth_for_event(
     """
 
     room_id = event.room_id
-    tmp_event: Optional[EventBase] = event
+    tmp_event: EventBase | None = event
 
     # We do an iterative search, replacing `event with the power level in its
     # auth events (if any)
@@ -866,7 +866,7 @@ async def _get_mainline_depth_for_event(
         idx += 1
 
         if idx % _AWAIT_AFTER_ITERATIONS == 0:
-            await clock.sleep(0)
+            await clock.sleep(Duration(seconds=0))
 
     # Didn't find a power level auth event, so we just return 0
     return 0
@@ -889,7 +889,7 @@ async def _get_event(
     event_map: dict[str, EventBase],
     state_res_store: StateResolutionStore,
     allow_none: Literal[True],
-) -> Optional[EventBase]: ...
+) -> EventBase | None: ...
 
 
 async def _get_event(
@@ -898,7 +898,7 @@ async def _get_event(
     event_map: dict[str, EventBase],
     state_res_store: StateResolutionStore,
     allow_none: bool = False,
-) -> Optional[EventBase]:
+) -> EventBase | None:
     """Helper function to look up event in event_map, falling back to looking
     it up in the store
 

@@ -21,7 +21,7 @@
 
 import logging
 import urllib.parse
-from typing import TYPE_CHECKING, Iterable, Optional, TypeVar
+from typing import TYPE_CHECKING, Iterable, TypeVar
 
 import bleach
 import jinja2
@@ -49,7 +49,7 @@ from synapse.storage.databases.main.event_push_actions import EmailPushAction
 from synapse.types import StateMap, UserID
 from synapse.types.state import StateFilter
 from synapse.util.async_helpers import concurrently_execute
-from synapse.visibility import filter_events_for_client
+from synapse.visibility import filter_and_transform_events_for_client
 
 if TYPE_CHECKING:
     from synapse.server import HomeServer
@@ -372,7 +372,7 @@ class Mailer:
         email_address: str,
         subject: str,
         extra_template_vars: TemplateVars,
-        unsubscribe_link: Optional[str] = None,
+        unsubscribe_link: str | None = None,
     ) -> None:
         """Send an email with the given information and template text"""
         template_vars: TemplateVars = {
@@ -486,7 +486,7 @@ class Mailer:
     async def _get_room_avatar(
         self,
         room_state_ids: StateMap[str],
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Retrieve the avatar url for this room---if it exists.
 
@@ -537,12 +537,11 @@ class Mailer:
             "messages": [],
         }
 
-        the_events = await filter_events_for_client(
+        the_events = await filter_and_transform_events_for_client(
             self._storage_controllers,
             user_id,
-            results.events_before,
+            results.events_before + [notif_event],
         )
-        the_events.append(notif_event)
 
         for event in the_events:
             messagevars = await self._get_message_vars(notif, event, room_state_ids)
@@ -553,7 +552,7 @@ class Mailer:
 
     async def _get_message_vars(
         self, notif: EmailPushAction, event: EventBase, room_state_ids: StateMap[str]
-    ) -> Optional[MessageVars]:
+    ) -> MessageVars | None:
         """
         Generate the variables for a single event, if possible.
 
@@ -573,7 +572,7 @@ class Mailer:
         type_state_key = ("m.room.member", event.sender)
         sender_state_event_id = room_state_ids.get(type_state_key)
         if sender_state_event_id:
-            sender_state_event: Optional[EventBase] = await self.store.get_event(
+            sender_state_event: EventBase | None = await self.store.get_event(
                 sender_state_event_id
             )
         else:
@@ -585,9 +584,7 @@ class Mailer:
 
         if sender_state_event:
             sender_name = name_from_member_event(sender_state_event)
-            sender_avatar_url: Optional[str] = sender_state_event.content.get(
-                "avatar_url"
-            )
+            sender_avatar_url: str | None = sender_state_event.content.get("avatar_url")
         else:
             # No state could be found, fallback to the MXID.
             sender_name = event.sender

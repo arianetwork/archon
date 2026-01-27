@@ -38,6 +38,7 @@ from synapse.storage.database import (
 )
 from synapse.types import ISynapseReactor
 from synapse.util.clock import Clock
+from synapse.util.duration import Duration
 from synapse.util.stringutils import random_string
 
 if TYPE_CHECKING:
@@ -49,10 +50,12 @@ logger = logging.getLogger(__name__)
 
 # How often to renew an acquired lock by updating the `last_renewed_ts` time in
 # the lock table.
-_RENEWAL_INTERVAL_MS = 30 * 1000
+_RENEWAL_INTERVAL = Duration(seconds=30)
 
 # How long before an acquired lock times out.
 _LOCK_TIMEOUT_MS = 2 * 60 * 1000
+
+_LOCK_REAP_INTERVAL = Duration(milliseconds=_LOCK_TIMEOUT_MS / 10.0)
 
 
 class LockStore(SQLBaseStore):
@@ -106,9 +109,7 @@ class LockStore(SQLBaseStore):
 
         self._acquiring_locks: set[tuple[str, str]] = set()
 
-        self.clock.looping_call(
-            self._reap_stale_read_write_locks, _LOCK_TIMEOUT_MS / 10.0
-        )
+        self.clock.looping_call(self._reap_stale_read_write_locks, _LOCK_REAP_INTERVAL)
 
     @wrap_as_background_process("LockStore._on_shutdown")
     async def _on_shutdown(self) -> None:
@@ -290,7 +291,7 @@ class LockStore(SQLBaseStore):
         self,
         lock_names: Collection[tuple[str, str]],
         write: bool,
-    ) -> Optional[AsyncExitStack]:
+    ) -> AsyncExitStack | None:
         """Try to acquire multiple locks for the given names/keys. Will return
         an async context manager if the locks are successfully acquired, which
         *must* be used (otherwise the lock will leak).
@@ -402,7 +403,7 @@ class Lock:
 
         # We might be called from a non-main thread, so we defer setting up the
         # looping call.
-        self._looping_call: Optional[LoopingCall] = None
+        self._looping_call: LoopingCall | None = None
         reactor.callFromThread(self._setup_looping_call)
 
         self._dropped = False
@@ -410,7 +411,7 @@ class Lock:
     def _setup_looping_call(self) -> None:
         self._looping_call = self._clock.looping_call(
             self._renew,
-            _RENEWAL_INTERVAL_MS,
+            _RENEWAL_INTERVAL,
             self._server_name,
             self._store,
             self._hs,
@@ -497,9 +498,9 @@ class Lock:
 
     async def __aexit__(
         self,
-        _exctype: Optional[type[BaseException]],
-        _excinst: Optional[BaseException],
-        _exctb: Optional[TracebackType],
+        _exctype: type[BaseException] | None,
+        _excinst: BaseException | None,
+        _exctb: TracebackType | None,
     ) -> bool:
         await self.release()
 

@@ -19,6 +19,13 @@
 #
 #
 
+# These imports are necessary for python <= 3.13 in order for the `InFlightGauge` type
+# annotations not to be evaluated at runtime.
+# Starting with python 3.14, annotations are lazily evaluated by default, which is the
+# behaviour we desire.
+# More info here: https://docs.python.org/3/reference/compound_stmts.html#annotations
+from __future__ import annotations
+
 import logging
 from functools import wraps
 from types import TracebackType
@@ -26,7 +33,6 @@ from typing import (
     Awaitable,
     Callable,
     Generator,
-    Optional,
     Protocol,
     TypeVar,
 )
@@ -136,7 +142,7 @@ class HasClockAndServerName(Protocol):
 
 
 def measure_func(
-    name: Optional[str] = None,
+    name: str | None = None,
 ) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
     """Decorate an async method with a `Measure` context manager.
 
@@ -220,7 +226,7 @@ class Measure:
             server_name=self.server_name,
             parent_context=parent_context,
         )
-        self.start: Optional[float] = None
+        self.start: float | None = None
 
     def __enter__(self) -> "Measure":
         if self.start is not None:
@@ -236,9 +242,9 @@ class Measure:
 
     def __exit__(
         self,
-        exc_type: Optional[type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
     ) -> None:
         if self.start is None:
             raise RuntimeError("Measure() block exited without being entered")

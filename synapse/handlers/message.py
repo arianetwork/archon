@@ -83,6 +83,7 @@ from synapse.types.state import StateFilter
 from synapse.util import log_failure, unwrapFirstError
 from synapse.util.async_helpers import Linearizer, gather_results
 from synapse.util.caches.expiringcache import ExpiringCache
+from synapse.util.duration import Duration
 from synapse.util.json import json_decoder, json_encoder
 from synapse.util.metrics import measure_func
 from synapse.visibility import get_effective_room_visibility_from_state
@@ -123,7 +124,7 @@ class MessageHandler:
         room_id: str,
         event_type: str,
         state_key: str,
-    ) -> Optional[EventBase]:
+    ) -> EventBase | None:
         """Get data from a room.
 
         Args:
@@ -178,8 +179,8 @@ class MessageHandler:
         self,
         requester: Requester,
         room_id: str,
-        state_filter: Optional[StateFilter] = None,
-        at_token: Optional[StreamToken] = None,
+        state_filter: StateFilter | None = None,
+        at_token: StreamToken | None = None,
     ) -> list[dict]:
         """Retrieve all state events for a given room. If the user is
         joined to the room then return the current state. If the user has
@@ -321,7 +322,7 @@ class MessageHandler:
             current_membership,
             _,
         ) = await self.store.get_local_current_membership_for_user_in_room(
-            user_id, event_id
+            user_id, room_id
         )
         return current_membership == Membership.JOIN
 
@@ -433,14 +434,11 @@ class MessageHandler:
 
         # Figure out how many seconds we need to wait before expiring the event.
         now_ms = self.clock.time_msec()
-        delay = (expiry_ts - now_ms) / 1000
+        delay = Duration(milliseconds=max(expiry_ts - now_ms, 0))
 
-        # callLater doesn't support negative delays, so trim the delay to 0 if we're
-        # in that case.
-        if delay < 0:
-            delay = 0
-
-        logger.info("Scheduling expiry for event %s in %.3fs", event_id, delay)
+        logger.info(
+            "Scheduling expiry for event %s in %.3fs", event_id, delay.as_secs()
+        )
 
         self._scheduled_expiry = self.clock.call_later(
             delay,
@@ -551,7 +549,7 @@ class EventCreationHandler:
                     "send_dummy_events_to_fill_extremities",
                     self._send_dummy_events_to_fill_extremities,
                 ),
-                5 * 60 * 1000,
+                Duration(minutes=5),
             )
 
         self._message_handler = hs.get_message_handler()
@@ -563,7 +561,7 @@ class EventCreationHandler:
         # Stores the state groups we've recently added to the joined hosts
         # external cache. Note that the timeout must be significantly less than
         # the TTL on the external cache.
-        self._external_cache_joined_hosts_updates: Optional[ExpiringCache] = None
+        self._external_cache_joined_hosts_updates: ExpiringCache | None = None
         if self._external_cache.is_enabled():
             self._external_cache_joined_hosts_updates = ExpiringCache(
                 cache_name="_external_cache_joined_hosts_updates",
@@ -577,16 +575,16 @@ class EventCreationHandler:
         self,
         requester: Requester,
         event_dict: dict,
-        txn_id: Optional[str] = None,
-        prev_event_ids: Optional[list[str]] = None,
-        auth_event_ids: Optional[list[str]] = None,
-        state_event_ids: Optional[list[str]] = None,
+        txn_id: str | None = None,
+        prev_event_ids: list[str] | None = None,
+        auth_event_ids: list[str] | None = None,
+        state_event_ids: list[str] | None = None,
         require_consent: bool = True,
         outlier: bool = False,
-        depth: Optional[int] = None,
-        state_map: Optional[StateMap[str]] = None,
+        depth: int | None = None,
+        state_map: StateMap[str] | None = None,
         for_batch: bool = False,
-        current_state_group: Optional[int] = None,
+        current_state_group: int | None = None,
     ) -> tuple[EventBase, UnpersistedEventContextBase]:
         """
         Given a dict from a client, create a new event. If bool for_batch is true, will
@@ -865,7 +863,7 @@ class EventCreationHandler:
 
     async def deduplicate_state_event(
         self, event: EventBase, context: EventContext
-    ) -> Optional[EventBase]:
+    ) -> EventBase | None:
         """
         Checks whether event is in the latest resolved state in context.
 
@@ -903,7 +901,7 @@ class EventCreationHandler:
         requester: Requester,
         txn_id: str,
         room_id: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """For the given transaction ID and room ID, check if there is a matching event ID.
 
         Args:
@@ -937,7 +935,7 @@ class EventCreationHandler:
         requester: Requester,
         txn_id: str,
         room_id: str,
-    ) -> Optional[EventBase]:
+    ) -> EventBase | None:
         """For the given transaction ID and room ID, check if there is a matching event.
         If so, fetch it and return it.
 
@@ -961,13 +959,13 @@ class EventCreationHandler:
         self,
         requester: Requester,
         event_dict: dict,
-        prev_event_ids: Optional[list[str]] = None,
-        state_event_ids: Optional[list[str]] = None,
+        prev_event_ids: list[str] | None = None,
+        state_event_ids: list[str] | None = None,
         ratelimit: bool = True,
-        txn_id: Optional[str] = None,
+        txn_id: str | None = None,
         ignore_shadow_ban: bool = False,
         outlier: bool = False,
-        depth: Optional[int] = None,
+        depth: int | None = None,
     ) -> tuple[EventBase, int]:
         """
         Creates an event, then sends it.
@@ -1012,7 +1010,7 @@ class EventCreationHandler:
 
         if not ignore_shadow_ban and requester.shadow_banned:
             # We randomly sleep a bit just to annoy the requester.
-            await self.clock.sleep(random.randint(1, 10))
+            await self.clock.sleep(Duration(seconds=random.randint(1, 10)))
             raise ShadowBanError()
 
         room_version = None
@@ -1098,13 +1096,13 @@ class EventCreationHandler:
         self,
         requester: Requester,
         event_dict: dict,
-        prev_event_ids: Optional[list[str]] = None,
-        state_event_ids: Optional[list[str]] = None,
+        prev_event_ids: list[str] | None = None,
+        state_event_ids: list[str] | None = None,
         ratelimit: bool = True,
-        txn_id: Optional[str] = None,
+        txn_id: str | None = None,
         ignore_shadow_ban: bool = False,
         outlier: bool = False,
-        depth: Optional[int] = None,
+        depth: int | None = None,
     ) -> tuple[EventBase, int]:
         room_id = event_dict["room_id"]
 
@@ -1219,14 +1217,14 @@ class EventCreationHandler:
     async def create_new_client_event(
         self,
         builder: EventBuilder,
-        requester: Optional[Requester] = None,
-        prev_event_ids: Optional[list[str]] = None,
-        auth_event_ids: Optional[list[str]] = None,
-        state_event_ids: Optional[list[str]] = None,
-        depth: Optional[int] = None,
-        state_map: Optional[StateMap[str]] = None,
+        requester: Requester | None = None,
+        prev_event_ids: list[str] | None = None,
+        auth_event_ids: list[str] | None = None,
+        state_event_ids: list[str] | None = None,
+        depth: int | None = None,
+        state_map: StateMap[str] | None = None,
         for_batch: bool = False,
-        current_state_group: Optional[int] = None,
+        current_state_group: int | None = None,
     ) -> tuple[EventBase, UnpersistedEventContextBase]:
         """Create a new event for a local client. If bool for_batch is true, will
         create an event using the prev_event_ids, and will create an event context for
@@ -1473,7 +1471,7 @@ class EventCreationHandler:
         requester: Requester,
         events_and_context: list[EventPersistencePair],
         ratelimit: bool = True,
-        extra_users: Optional[list[UserID]] = None,
+        extra_users: list[UserID] | None = None,
         ignore_shadow_ban: bool = False,
     ) -> EventBase:
         """Processes new events. Please note that if batch persisting events, an error in
@@ -1515,7 +1513,7 @@ class EventCreationHandler:
                 and requester.shadow_banned
             ):
                 # We randomly sleep a bit just to annoy the requester.
-                await self.clock.sleep(random.randint(1, 10))
+                await self.clock.sleep(Duration(seconds=random.randint(1, 10)))
                 raise ShadowBanError()
 
             if event.is_state():
@@ -1592,7 +1590,7 @@ class EventCreationHandler:
         self,
         requester: Requester,
         room_id: str,
-        prev_event_id: Optional[str],
+        prev_event_id: str | None,
         event_dicts: Sequence[JsonDict],
         ratelimit: bool = True,
         ignore_shadow_ban: bool = False,
@@ -1685,7 +1683,7 @@ class EventCreationHandler:
         requester: Requester,
         events_and_context: list[EventPersistencePair],
         ratelimit: bool = True,
-        extra_users: Optional[list[UserID]] = None,
+        extra_users: list[UserID] | None = None,
     ) -> EventBase:
         """Actually persists new events. Should only be called by
         `handle_new_client_event`, and see its docstring for documentation of
@@ -1877,7 +1875,7 @@ class EventCreationHandler:
         requester: Requester,
         events_and_context: list[EventPersistencePair],
         ratelimit: bool = True,
-        extra_users: Optional[list[UserID]] = None,
+        extra_users: list[UserID] | None = None,
     ) -> EventBase:
         """Called when we have fully built the events, have already
         calculated the push actions for the events, and checked auth.
@@ -1957,6 +1955,12 @@ class EventCreationHandler:
                 room_alias_str = event.content.get("alias", None)
                 directory_handler = self.hs.get_directory_handler()
                 if room_alias_str and room_alias_str != original_alias:
+                    if not isinstance(room_alias_str, str):
+                        raise SynapseError(
+                            400,
+                            "The alias must be of type string.",
+                            Codes.INVALID_PARAM,
+                        )
                     await self._validate_canonical_alias(
                         directory_handler, room_alias_str, event.room_id
                     )
@@ -1980,6 +1984,12 @@ class EventCreationHandler:
                 new_alt_aliases = set(alt_aliases) - set(original_alt_aliases)
                 if new_alt_aliases:
                     for alias_str in new_alt_aliases:
+                        if not isinstance(alias_str, str):
+                            raise SynapseError(
+                                400,
+                                "Each alt_alias must be of type string.",
+                                Codes.INVALID_PARAM,
+                            )
                         await self._validate_canonical_alias(
                             directory_handler, alias_str, event.room_id
                         )
@@ -2132,7 +2142,7 @@ class EventCreationHandler:
         return persisted_events[-1]
 
     async def is_admin_redaction(
-        self, event_type: str, sender: str, redacts: Optional[str]
+        self, event_type: str, sender: str, redacts: str | None
     ) -> bool:
         """Return whether the event is a redaction made by an admin, and thus
         should use a different ratelimiter.
@@ -2174,7 +2184,7 @@ class EventCreationHandler:
         logger.info("maybe_kick_guest_users %r", current_state)
         await self.hs.get_room_member_handler().kick_guest_users(current_state)
 
-    async def _bump_active_time(self, user: UserID, device_id: Optional[str]) -> None:
+    async def _bump_active_time(self, user: UserID, device_id: str | None) -> None:
         try:
             presence = self.hs.get_presence_handler()
             await presence.bump_presence_active_time(user, device_id)

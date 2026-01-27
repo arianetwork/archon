@@ -25,7 +25,6 @@ from typing import (
     Mapping,
     NamedTuple,
     TypeVar,
-    Union,
     cast,
 )
 
@@ -910,7 +909,7 @@ class EventFederationWorkerStoreTestCase(tests.unittest.HomeserverTestCase):
                 test_case.conflicted,
                 test_case.additional_backwards_reachable,
             )
-            self.assertEquals(
+            self.assertEqual(
                 result.conflicted_subgraph,
                 test_case.want_conflicted_subgraph,
                 f"{test_case.name} : conflicted subgraph mismatch",
@@ -931,7 +930,7 @@ class EventFederationWorkerStoreTestCase(tests.unittest.HomeserverTestCase):
 
         room_id = "some_room_id"
 
-        def prev_event_format(prev_event_id: str) -> Union[tuple[str, dict], str]:
+        def prev_event_format(prev_event_id: str) -> tuple[str, dict] | str:
             """Account for differences in prev_events format across room versions"""
             if room_version.event_format == EventFormatVersions.ROOM_V1_V2:
                 return prev_event_id, {}

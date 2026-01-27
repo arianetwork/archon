@@ -25,7 +25,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Mapping,
-    Optional,
     Sequence,
 )
 
@@ -45,7 +44,7 @@ from synapse.types import (
     UserInfo,
     create_requester,
 )
-from synapse.visibility import filter_events_for_client
+from synapse.visibility import filter_and_transform_events_for_client
 
 if TYPE_CHECKING:
     from synapse.server import HomeServer
@@ -71,7 +70,7 @@ class AdminHandler:
 
         self.hs = hs
 
-    async def get_redact_task(self, redact_id: str) -> Optional[ScheduledTask]:
+    async def get_redact_task(self, redact_id: str) -> ScheduledTask | None:
         """Get the current status of an active redaction process
 
         Args:
@@ -99,11 +98,9 @@ class AdminHandler:
 
         return ret
 
-    async def get_user(self, user: UserID) -> Optional[JsonMapping]:
+    async def get_user(self, user: UserID) -> JsonMapping | None:
         """Function to get user details"""
-        user_info: Optional[UserInfo] = await self._store.get_user_by_id(
-            user.to_string()
-        )
+        user_info: UserInfo | None = await self._store.get_user_by_id(user.to_string())
         if user_info is None:
             return None
 
@@ -254,7 +251,7 @@ class AdminHandler:
                     topological=last_event.depth,
                 )
 
-                events = await filter_events_for_client(
+                events = await filter_and_transform_events_for_client(
                     self._storage_controllers,
                     user_id,
                     events,
@@ -355,8 +352,8 @@ class AdminHandler:
         rooms: list,
         requester: JsonMapping,
         use_admin: bool,
-        reason: Optional[str],
-        limit: Optional[int],
+        reason: str | None,
+        limit: int | None,
     ) -> str:
         """
         Start a task redacting the events of the given user in the given rooms
@@ -408,7 +405,7 @@ class AdminHandler:
 
     async def _redact_all_events(
         self, task: ScheduledTask
-    ) -> tuple[TaskStatus, Optional[Mapping[str, Any]], Optional[str]]:
+    ) -> tuple[TaskStatus, Mapping[str, Any] | None, str | None]:
         """
         Task to redact all of a users events in the given rooms, tracking which, if any, events
         whose redaction failed

@@ -42,7 +42,6 @@ from typing import (
     TYPE_CHECKING,
     Hashable,
     Iterable,
-    Optional,
     Sized,
 )
 
@@ -54,6 +53,7 @@ from synapse.federation.sender import AbstractFederationSender, FederationSender
 from synapse.metrics import SERVER_NAME_LABEL, LaterGauge
 from synapse.replication.tcp.streams.federation import FederationStream
 from synapse.types import JsonDict, ReadReceipt, RoomStreamToken, StrCollection
+from synapse.util.duration import Duration
 from synapse.util.metrics import Measure
 
 from .units import Edu
@@ -138,7 +138,7 @@ class FederationRemoteSendQueue(AbstractFederationSender):
             assert isinstance(queue, Sized)
             register(queue_name, queue=queue)
 
-        self.clock.looping_call(self._clear_queue, 30 * 1000)
+        self.clock.looping_call(self._clear_queue, Duration(seconds=30))
 
     def shutdown(self) -> None:
         """Stops this federation sender instance from sending further transactions."""
@@ -217,7 +217,7 @@ class FederationRemoteSendQueue(AbstractFederationSender):
         destination: str,
         edu_type: str,
         content: JsonDict,
-        key: Optional[Hashable] = None,
+        key: Hashable | None = None,
     ) -> None:
         """As per FederationSender"""
         if self.is_mine_server_name(destination):

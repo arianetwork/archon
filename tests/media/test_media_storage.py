@@ -23,7 +23,7 @@ import shutil
 import tempfile
 from binascii import unhexlify
 from io import BytesIO
-from typing import Any, BinaryIO, ClassVar, Literal, Optional, Union
+from typing import Any, BinaryIO, ClassVar, Literal
 from unittest.mock import MagicMock, Mock, patch
 from urllib import parse
 
@@ -48,7 +48,10 @@ from synapse.logging.context import make_deferred_yieldable
 from synapse.media._base import FileInfo, ThumbnailInfo
 from synapse.media.filepath import MediaFilePaths
 from synapse.media.media_storage import MediaStorage, ReadableFileWrapper
-from synapse.media.storage_provider import FileStorageProviderBackend
+from synapse.media.storage_provider import (
+    FileStorageProviderBackend,
+    StorageProviderWrapper,
+)
 from synapse.media.thumbnailer import ThumbnailProvider
 from synapse.module_api import ModuleApi
 from synapse.module_api.callbacks.spamchecker_callbacks import load_legacy_spam_checkers
@@ -77,11 +80,19 @@ class MediaStorageTests(unittest.HomeserverTestCase):
 
         hs.config.media.media_store_path = self.primary_base_path
 
-        storage_providers = [FileStorageProviderBackend(hs, self.secondary_base_path)]
+        local_provider = FileStorageProviderBackend(hs, self.primary_base_path)
+        storage_providers = [
+            StorageProviderWrapper(
+                FileStorageProviderBackend(hs, self.secondary_base_path),
+                store_local=True,
+                store_remote=False,
+                store_synchronous=True,
+            ),
+        ]
 
         self.filepaths = MediaFilePaths(self.primary_base_path)
         self.media_storage = MediaStorage(
-            hs, self.primary_base_path, self.filepaths, storage_providers
+            hs, self.filepaths, storage_providers, local_provider
         )
 
     def test_ensure_media_is_in_local_cache(self) -> None:
@@ -102,29 +113,31 @@ class MediaStorageTests(unittest.HomeserverTestCase):
         # to the local cache.
         file_info = FileInfo(None, media_id)
 
+        async def test_ensure_media() -> None:
+            async with self.media_storage.ensure_media_is_in_local_cache(
+                file_info
+            ) as local_path:
+                self.assertTrue(os.path.exists(local_path))
+
+                # Asserts the file is under the expected local cache directory
+                self.assertEqual(
+                    os.path.commonprefix([self.primary_base_path, local_path]),
+                    self.primary_base_path,
+                )
+
+                with open(local_path) as f:
+                    body = f.read()
+
+                self.assertEqual(test_body, body)
+
         # This uses a real blocking threadpool so we have to wait for it to be
         # actually done :/
-        x = defer.ensureDeferred(
-            self.media_storage.ensure_media_is_in_local_cache(file_info)
-        )
+        x = defer.ensureDeferred(test_ensure_media())
 
         # Hotloop until the threadpool does its job...
         self.wait_on_thread(x)
 
-        local_path = self.get_success(x)
-
-        self.assertTrue(os.path.exists(local_path))
-
-        # Asserts the file is under the expected local cache directory
-        self.assertEqual(
-            os.path.commonprefix([self.primary_base_path, local_path]),
-            self.primary_base_path,
-        )
-
-        with open(local_path) as f:
-            body = f.read()
-
-        self.assertEqual(test_body, body)
+        self.get_success(x)
 
 
 @attr.s(auto_attribs=True, slots=True, frozen=True)
@@ -150,8 +163,8 @@ class TestImage:
     data: bytes
     content_type: bytes
     extension: bytes
-    expected_cropped: Optional[bytes] = None
-    expected_scaled: Optional[bytes] = None
+    expected_cropped: bytes | None = None
+    expected_scaled: bytes | None = None
     expected_found: bool = True
     unable_to_thumbnail: bool = False
     is_inline: bool = True
@@ -302,7 +315,7 @@ class MediaRepoTests(unittest.HomeserverTestCase):
                 "Deferred[tuple[bytes, tuple[int, dict[bytes, list[bytes]]]]]",
                 str,
                 str,
-                Optional[QueryParams],
+                QueryParams | None,
             ]
         ] = []
 
@@ -313,7 +326,7 @@ class MediaRepoTests(unittest.HomeserverTestCase):
             download_ratelimiter: Ratelimiter,
             ip_address: Any,
             max_size: int,
-            args: Optional[QueryParams] = None,
+            args: QueryParams | None = None,
             retry_on_dns_fail: bool = True,
             ignore_backoff: bool = False,
             follow_redirects: bool = False,
@@ -376,7 +389,7 @@ class MediaRepoTests(unittest.HomeserverTestCase):
         return resources
 
     def _req(
-        self, content_disposition: Optional[bytes], include_content_type: bool = True
+        self, content_disposition: bytes | None, include_content_type: bool = True
     ) -> FakeChannel:
         channel = self.make_request(
             "GET",
@@ -654,7 +667,7 @@ class MediaRepoTests(unittest.HomeserverTestCase):
     def _test_thumbnail(
         self,
         method: str,
-        expected_body: Optional[bytes],
+        expected_body: bytes | None,
         expected_found: bool,
         unable_to_thumbnail: bool = False,
     ) -> None:
@@ -868,7 +881,7 @@ class TestSpamCheckerLegacy:
     def parse_config(config: dict[str, Any]) -> dict[str, Any]:
         return config
 
-    async def check_event_for_spam(self, event: EventBase) -> Union[bool, str]:
+    async def check_event_for_spam(self, event: EventBase) -> bool | str:
         return False  # allow all events
 
     async def user_may_invite(
@@ -972,7 +985,7 @@ class SpamCheckerTestCase(unittest.HomeserverTestCase):
 
     async def check_media_file_for_spam(
         self, file_wrapper: ReadableFileWrapper, file_info: FileInfo
-    ) -> Union[Codes, Literal["NOT_SPAM"], tuple[Codes, JsonDict]]:
+    ) -> Codes | Literal["NOT_SPAM"] | tuple[Codes, JsonDict]:
         buf = BytesIO()
         await file_wrapper.write_chunks_to(buf.write)
 
@@ -1259,7 +1272,7 @@ class RemoteDownloadLimiterTestCase(unittest.HomeserverTestCase):
 
 
 def read_body(
-    response: IResponse, stream: ByteWriteable, max_size: Optional[int]
+    response: IResponse, stream: ByteWriteable, max_size: int | None
 ) -> Deferred:
     d: Deferred = defer.Deferred()
     stream.write(SMALL_PNG)

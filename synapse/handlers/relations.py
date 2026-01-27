@@ -25,7 +25,6 @@ from typing import (
     Collection,
     Iterable,
     Mapping,
-    Optional,
     Sequence,
 )
 
@@ -41,7 +40,7 @@ from synapse.storage.databases.main.relations import ThreadsNextBatch, _RelatedE
 from synapse.streams.config import PaginationConfig
 from synapse.types import JsonDict, Requester, UserID
 from synapse.util.async_helpers import gather_results
-from synapse.visibility import filter_events_for_client
+from synapse.visibility import filter_and_transform_events_for_client
 
 if TYPE_CHECKING:
     from synapse.server import HomeServer
@@ -75,9 +74,9 @@ class BundledAggregations:
     Some values require additional processing during serialization.
     """
 
-    references: Optional[JsonDict] = None
-    replace: Optional[EventBase] = None
-    thread: Optional[_ThreadAggregation] = None
+    references: JsonDict | None = None
+    replace: EventBase | None = None
+    thread: _ThreadAggregation | None = None
 
     def __bool__(self) -> bool:
         return bool(self.references or self.replace or self.thread)
@@ -101,8 +100,8 @@ class RelationsHandler:
         pagin_config: PaginationConfig,
         recurse: bool,
         include_original_event: bool,
-        relation_type: Optional[str] = None,
-        event_type: Optional[str] = None,
+        relation_type: str | None = None,
+        event_type: str | None = None,
     ) -> JsonDict:
         """Get related events of a event, ordered by topological ordering.
 
@@ -155,7 +154,7 @@ class RelationsHandler:
             [e.event_id for e in related_events]
         )
 
-        events = await filter_events_for_client(
+        events = await filter_and_transform_events_for_client(
             self._storage_controllers,
             user_id,
             events,
@@ -553,7 +552,7 @@ class RelationsHandler:
         room_id: str,
         include: ThreadsListInclude,
         limit: int = 5,
-        from_token: Optional[ThreadsNextBatch] = None,
+        from_token: ThreadsNextBatch | None = None,
     ) -> JsonDict:
         """Get related events of a event, ordered by topological ordering.
 
@@ -600,7 +599,7 @@ class RelationsHandler:
             # Limit the returned threads to those the user has participated in.
             events = [event for event in events if participated[event.event_id]]
 
-        events = await filter_events_for_client(
+        events = await filter_and_transform_events_for_client(
             self._storage_controllers,
             user_id,
             events,

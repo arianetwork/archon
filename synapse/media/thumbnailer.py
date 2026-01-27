@@ -22,7 +22,7 @@
 import logging
 from io import BytesIO
 from types import TracebackType
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from PIL import Image
 
@@ -237,9 +237,9 @@ class Thumbnailer:
 
     def __exit__(
         self,
-        type: Optional[type[BaseException]],
-        value: Optional[BaseException],
-        traceback: Optional[TracebackType],
+        type: type[BaseException] | None,
+        value: BaseException | None,
+        traceback: TracebackType | None,
     ) -> None:
         self.close()
 
@@ -549,8 +549,8 @@ class ThumbnailProvider:
         file_id: str,
         url_cache: bool,
         for_federation: bool,
-        media_info: Optional[LocalMedia] = None,
-        server_name: Optional[str] = None,
+        media_info: LocalMedia | None = None,
+        server_name: str | None = None,
     ) -> None:
         """
         Respond to a request with an appropriate thumbnail from the previously generated thumbnails.
@@ -633,13 +633,6 @@ class ThumbnailProvider:
             # width/height/method so we can just call the "generate exact"
             # methods.
 
-            # First let's check that we do actually have the original image
-            # still. This will throw a 404 if we don't.
-            # TODO: We should refetch the thumbnails for remote media.
-            await self.media_storage.ensure_media_is_in_local_cache(
-                FileInfo(server_name, file_id, url_cache=url_cache)
-            )
-
             if server_name:
                 await self.media_repo.generate_remote_exact_thumbnail(
                     server_name,
@@ -713,8 +706,8 @@ class ThumbnailProvider:
         thumbnail_infos: list[ThumbnailInfo],
         file_id: str,
         url_cache: bool,
-        server_name: Optional[str],
-    ) -> Optional[FileInfo]:
+        server_name: str | None,
+    ) -> FileInfo | None:
         """
         Choose an appropriate thumbnail from the previously generated thumbnails.
 
@@ -742,11 +735,11 @@ class ThumbnailProvider:
         if desired_method == "crop":
             # Thumbnails that match equal or larger sizes of desired width/height.
             crop_info_list: list[
-                tuple[int, int, int, bool, Optional[int], ThumbnailInfo]
+                tuple[int, int, int, bool, int | None, ThumbnailInfo]
             ] = []
             # Other thumbnails.
             crop_info_list2: list[
-                tuple[int, int, int, bool, Optional[int], ThumbnailInfo]
+                tuple[int, int, int, bool, int | None, ThumbnailInfo]
             ] = []
             for info in thumbnail_infos:
                 # Skip thumbnails generated with different methods.

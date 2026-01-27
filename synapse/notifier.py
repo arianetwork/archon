@@ -28,9 +28,7 @@ from typing import (
     Iterable,
     Literal,
     Mapping,
-    Optional,
     TypeVar,
-    Union,
     overload,
 )
 
@@ -63,8 +61,9 @@ from synapse.types import (
 from synapse.util.async_helpers import (
     timeout_deferred,
 )
+from synapse.util.duration import Duration
 from synapse.util.stringutils import shortstr
-from synapse.visibility import filter_events_for_client
+from synapse.visibility import filter_and_transform_events_for_client
 
 if TYPE_CHECKING:
     from synapse.server import HomeServer
@@ -211,7 +210,7 @@ class _NotifierUserStream:
 
 @attr.s(slots=True, frozen=True, auto_attribs=True)
 class EventStreamResult:
-    events: list[Union[JsonDict, EventBase]]
+    events: list[JsonDict | EventBase]
     start_token: StreamToken
     end_token: StreamToken
 
@@ -226,8 +225,8 @@ class _PendingRoomEventEntry:
 
     room_id: str
     type: str
-    state_key: Optional[str]
-    membership: Optional[str]
+    state_key: str | None
+    membership: str | None
 
 
 class Notifier:
@@ -237,7 +236,7 @@ class Notifier:
     Primarily used from the /events stream.
     """
 
-    UNUSED_STREAM_EXPIRY_MS = 10 * 60 * 1000
+    UNUSED_STREAM_EXPIRY = Duration(minutes=10)
 
     def __init__(self, hs: "HomeServer"):
         self.user_to_user_stream: dict[str, _NotifierUserStream] = {}
@@ -271,9 +270,7 @@ class Notifier:
 
         self.state_handler = hs.get_state_handler()
 
-        self.clock.looping_call(
-            self.remove_expired_streams, self.UNUSED_STREAM_EXPIRY_MS
-        )
+        self.clock.looping_call(self.remove_expired_streams, self.UNUSED_STREAM_EXPIRY)
 
         # This is not a very cheap test to perform, but it's only executed
         # when rendering the metrics page, which is likely once per minute at
@@ -336,7 +333,7 @@ class Notifier:
         self,
         events_and_pos: list[tuple[EventBase, PersistedEventPosition]],
         max_room_stream_token: RoomStreamToken,
-        extra_users: Optional[Collection[UserID]] = None,
+        extra_users: Collection[UserID] | None = None,
     ) -> None:
         """Creates a _PendingRoomEventEntry for each of the listed events and calls
         notify_new_room_events with the results."""
@@ -421,11 +418,11 @@ class Notifier:
     def create_pending_room_event_entry(
         self,
         event_pos: PersistedEventPosition,
-        extra_users: Optional[Collection[UserID]],
+        extra_users: Collection[UserID] | None,
         room_id: str,
         event_type: str,
-        state_key: Optional[str],
-        membership: Optional[str],
+        state_key: str | None,
+        membership: str | None,
     ) -> _PendingRoomEventEntry:
         """Creates and returns a _PendingRoomEventEntry"""
         return _PendingRoomEventEntry(
@@ -504,8 +501,8 @@ class Notifier:
         self,
         stream_key: Literal[StreamKeyType.ROOM],
         new_token: RoomStreamToken,
-        users: Optional[Collection[Union[str, UserID]]] = None,
-        rooms: Optional[StrCollection] = None,
+        users: Collection[str | UserID] | None = None,
+        rooms: StrCollection | None = None,
     ) -> None: ...
 
     @overload
@@ -513,8 +510,8 @@ class Notifier:
         self,
         stream_key: Literal[StreamKeyType.RECEIPT],
         new_token: MultiWriterStreamToken,
-        users: Optional[Collection[Union[str, UserID]]] = None,
-        rooms: Optional[StrCollection] = None,
+        users: Collection[str | UserID] | None = None,
+        rooms: StrCollection | None = None,
     ) -> None: ...
 
     @overload
@@ -531,16 +528,16 @@ class Notifier:
             StreamKeyType.THREAD_SUBSCRIPTIONS,
         ],
         new_token: int,
-        users: Optional[Collection[Union[str, UserID]]] = None,
-        rooms: Optional[StrCollection] = None,
+        users: Collection[str | UserID] | None = None,
+        rooms: StrCollection | None = None,
     ) -> None: ...
 
     def on_new_event(
         self,
         stream_key: StreamKeyType,
-        new_token: Union[int, RoomStreamToken, MultiWriterStreamToken],
-        users: Optional[Collection[Union[str, UserID]]] = None,
-        rooms: Optional[StrCollection] = None,
+        new_token: int | RoomStreamToken | MultiWriterStreamToken,
+        users: Collection[str | UserID] | None = None,
+        rooms: StrCollection | None = None,
     ) -> None:
         """Used to inform listeners that something has happened event wise.
 
@@ -636,7 +633,7 @@ class Notifier:
         user_id: str,
         timeout: int,
         callback: Callable[[StreamToken, StreamToken], Awaitable[T]],
-        room_ids: Optional[StrCollection] = None,
+        room_ids: StrCollection | None = None,
         from_token: StreamToken = StreamToken.START,
     ) -> T:
         """Wait until the callback returns a non empty response or the
@@ -737,7 +734,7 @@ class Notifier:
         pagination_config: PaginationConfig,
         timeout: int,
         is_guest: bool = False,
-        explicit_room_id: Optional[str] = None,
+        explicit_room_id: str | None = None,
     ) -> EventStreamResult:
         """For the given user and rooms, return any new events for them. If
         there are no new events wait for up to `timeout` milliseconds for any
@@ -767,7 +764,7 @@ class Notifier:
             # The events fetched from each source are a JsonDict, EventBase, or
             # UserPresenceState, but see below for UserPresenceState being
             # converted to JsonDict.
-            events: list[Union[JsonDict, EventBase]] = []
+            events: list[JsonDict | EventBase] = []
             end_token = from_token
 
             for keyname, source in self.event_sources.sources.get_sources():
@@ -786,7 +783,7 @@ class Notifier:
                 )
 
                 if keyname == StreamKeyType.ROOM:
-                    new_events = await filter_events_for_client(
+                    new_events = await filter_and_transform_events_for_client(
                         self._storage_controllers,
                         user.to_string(),
                         new_events,
@@ -863,10 +860,10 @@ class Notifier:
                 logged = True
 
             # TODO: be better
-            await self.clock.sleep(0.5)
+            await self.clock.sleep(Duration(milliseconds=500))
 
     async def _get_room_ids(
-        self, user: UserID, explicit_room_id: Optional[str]
+        self, user: UserID, explicit_room_id: str | None
     ) -> tuple[StrCollection, bool]:
         joined_room_ids = await self.store.get_rooms_for_user(user.to_string())
         if explicit_room_id:
@@ -891,7 +888,7 @@ class Notifier:
     def remove_expired_streams(self) -> None:
         time_now_ms = self.clock.time_msec()
         expired_streams = []
-        expire_before_ts = time_now_ms - self.UNUSED_STREAM_EXPIRY_MS
+        expire_before_ts = time_now_ms - self.UNUSED_STREAM_EXPIRY.as_millis()
         for stream in self.user_to_user_stream.values():
             if stream.count_listeners():
                 continue

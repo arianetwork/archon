@@ -85,8 +85,6 @@ from typing import (
     TYPE_CHECKING,
     Collection,
     Mapping,
-    Optional,
-    Union,
     cast,
 )
 
@@ -107,6 +105,7 @@ from synapse.storage.databases.main.receipts import ReceiptsWorkerStore
 from synapse.storage.databases.main.stream import StreamWorkerStore
 from synapse.types import JsonDict, StrCollection
 from synapse.util.caches.descriptors import cached
+from synapse.util.duration import Duration
 from synapse.util.json import json_encoder
 
 if TYPE_CHECKING:
@@ -115,11 +114,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_NOTIF_ACTION: list[Union[dict, str]] = [
+DEFAULT_NOTIF_ACTION: list[dict | str] = [
     "notify",
     {"set_tweak": "highlight", "value": False},
 ]
-DEFAULT_HIGHLIGHT_ACTION: list[Union[dict, str]] = [
+DEFAULT_HIGHLIGHT_ACTION: list[dict | str] = [
     "notify",
     {"set_tweak": "sound", "value": "default"},
     {"set_tweak": "highlight"},
@@ -162,7 +161,7 @@ class HttpPushAction:
     event_id: str
     room_id: str
     stream_ordering: int
-    actions: list[Union[dict, str]]
+    actions: list[dict | str]
 
 
 @attr.s(slots=True, frozen=True, auto_attribs=True)
@@ -172,7 +171,7 @@ class EmailPushAction(HttpPushAction):
     push notification.
     """
 
-    received_ts: Optional[int]
+    received_ts: int | None
 
 
 @attr.s(slots=True, frozen=True, auto_attribs=True)
@@ -221,9 +220,7 @@ class RoomNotifCounts:
 _EMPTY_ROOM_NOTIF_COUNTS = RoomNotifCounts(NotifCounts(), {})
 
 
-def _serialize_action(
-    actions: Collection[Union[Mapping, str]], is_highlight: bool
-) -> str:
+def _serialize_action(actions: Collection[Mapping | str], is_highlight: bool) -> str:
     """Custom serializer for actions. This allows us to "compress" common actions.
 
     We use the fact that most users have the same actions for notifs (and for
@@ -241,7 +238,7 @@ def _serialize_action(
     return json_encoder.encode(actions)
 
 
-def _deserialize_action(actions: str, is_highlight: bool) -> list[Union[dict, str]]:
+def _deserialize_action(actions: str, is_highlight: bool) -> list[dict | str]:
     """Custom deserializer for actions. This allows us to "compress" common actions"""
     if actions:
         return db_to_json(actions)
@@ -267,22 +264,24 @@ class EventPushActionsWorkerStore(ReceiptsWorkerStore, StreamWorkerStore, SQLBas
         self._started_ts = self.clock.time_msec()
 
         # These get correctly set by _find_stream_orderings_for_times_txn
-        self.stream_ordering_month_ago: Optional[int] = None
-        self.stream_ordering_day_ago: Optional[int] = None
+        self.stream_ordering_month_ago: int | None = None
+        self.stream_ordering_day_ago: int | None = None
 
         cur = db_conn.cursor(txn_name="_find_stream_orderings_for_times_txn")
         self._find_stream_orderings_for_times_txn(cur)
         cur.close()
 
-        self.clock.looping_call(self._find_stream_orderings_for_times, 10 * 60 * 1000)
+        self.clock.looping_call(
+            self._find_stream_orderings_for_times, Duration(minutes=10)
+        )
 
         self._rotate_count = 10000
         self._doing_notif_rotation = False
         if hs.config.worker.run_background_tasks:
-            self.clock.looping_call(self._rotate_notifs, 30 * 1000)
+            self.clock.looping_call(self._rotate_notifs, Duration(seconds=30))
 
             self.clock.looping_call(
-                self._clear_old_push_actions_staging, 30 * 60 * 1000
+                self._clear_old_push_actions_staging, Duration(minutes=30)
             )
 
         self.db_pool.updates.register_background_index_update(
@@ -773,8 +772,8 @@ class EventPushActionsWorkerStore(ReceiptsWorkerStore, StreamWorkerStore, SQLBas
         room_id: str,
         user_id: str,
         stream_ordering: int,
-        max_stream_ordering: Optional[int] = None,
-        thread_id: Optional[str] = None,
+        max_stream_ordering: int | None = None,
+        thread_id: str | None = None,
     ) -> list[tuple[int, int, str]]:
         """Returns the notify and unread counts from `event_push_actions` for
         the given user/room in the given range.
@@ -1156,7 +1155,7 @@ class EventPushActionsWorkerStore(ReceiptsWorkerStore, StreamWorkerStore, SQLBas
     async def add_push_actions_to_staging(
         self,
         event_id: str,
-        user_id_actions: dict[str, Collection[Union[Mapping, str]]],
+        user_id_actions: dict[str, Collection[Mapping | str]],
         count_as_unread: bool,
         thread_id: str,
     ) -> None:
@@ -1175,7 +1174,7 @@ class EventPushActionsWorkerStore(ReceiptsWorkerStore, StreamWorkerStore, SQLBas
         # This is a helper function for generating the necessary tuple that
         # can be used to insert into the `event_push_actions_staging` table.
         def _gen_entry(
-            user_id: str, actions: Collection[Union[Mapping, str]]
+            user_id: str, actions: Collection[Mapping | str]
         ) -> tuple[str, str, str, int, int, int, str, int]:
             is_highlight = 1 if _action_has_highlight(actions) else 0
             notif = 1 if "notify" in actions else 0
@@ -1293,7 +1292,7 @@ class EventPushActionsWorkerStore(ReceiptsWorkerStore, StreamWorkerStore, SQLBas
             The stream ordering
         """
         txn.execute("SELECT MAX(stream_ordering) FROM events")
-        max_stream_ordering = cast(tuple[Optional[int]], txn.fetchone())[0]
+        max_stream_ordering = cast(tuple[int | None], txn.fetchone())[0]
 
         if max_stream_ordering is None:
             return 0
@@ -1351,8 +1350,8 @@ class EventPushActionsWorkerStore(ReceiptsWorkerStore, StreamWorkerStore, SQLBas
 
     async def get_time_of_last_push_action_before(
         self, stream_ordering: int
-    ) -> Optional[int]:
-        def f(txn: LoggingTransaction) -> Optional[tuple[int]]:
+    ) -> int | None:
+        def f(txn: LoggingTransaction) -> tuple[int] | None:
             sql = """
                 SELECT e.received_ts
                 FROM event_push_actions AS ep
@@ -1362,7 +1361,7 @@ class EventPushActionsWorkerStore(ReceiptsWorkerStore, StreamWorkerStore, SQLBas
                 LIMIT 1
             """
             txn.execute(sql, (stream_ordering,))
-            return cast(Optional[tuple[int]], txn.fetchone())
+            return cast(tuple[int] | None, txn.fetchone())
 
         result = await self.db_pool.runInteraction(
             "get_time_of_last_push_action_before", f
@@ -1454,7 +1453,7 @@ class EventPushActionsWorkerStore(ReceiptsWorkerStore, StreamWorkerStore, SQLBas
                 limit,
             ),
         )
-        rows = cast(list[tuple[int, str, str, Optional[str], int]], txn.fetchall())
+        rows = cast(list[tuple[int, str, str, str | None, int]], txn.fetchall())
 
         # For each new read receipt we delete push actions from before it and
         # recalculate the summary.
@@ -1821,12 +1820,12 @@ class EventPushActionsWorkerStore(ReceiptsWorkerStore, StreamWorkerStore, SQLBas
                 return
 
             # We sleep to ensure that we don't overwhelm the DB.
-            await self.clock.sleep(1.0)
+            await self.clock.sleep(Duration(seconds=1))
 
     async def get_push_actions_for_user(
         self,
         user_id: str,
-        before: Optional[int] = None,
+        before: int | None = None,
         limit: int = 50,
         only_highlight: bool = False,
     ) -> list[UserPushAction]:
@@ -1915,7 +1914,7 @@ class EventPushActionsStore(EventPushActionsWorkerStore):
         )
 
 
-def _action_has_highlight(actions: Collection[Union[Mapping, str]]) -> bool:
+def _action_has_highlight(actions: Collection[Mapping | str]) -> bool:
     for action in actions:
         if not isinstance(action, dict):
             continue

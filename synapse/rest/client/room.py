@@ -25,9 +25,10 @@ import logging
 import re
 from enum import Enum
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Awaitable, Optional
+from typing import TYPE_CHECKING, Awaitable
 from urllib import parse as urlparse
 
+import attr
 from prometheus_client.core import Histogram
 
 from twisted.web.server import Request
@@ -45,10 +46,12 @@ from synapse.api.errors import (
 )
 from synapse.api.filtering import Filter
 from synapse.events.utils import (
+    EventClientSerializer,
     SerializeEventConfig,
     format_event_for_client_v2,
     serialize_event,
 )
+from synapse.handlers.pagination import GetMessagesResult
 from synapse.http.server import HttpServer
 from synapse.http.servlet import (
     ResolveRoomIdMixin,
@@ -64,15 +67,17 @@ from synapse.http.servlet import (
 )
 from synapse.http.site import SynapseRequest
 from synapse.logging.context import make_deferred_yieldable, run_in_background
-from synapse.logging.opentracing import set_tag
+from synapse.logging.opentracing import set_tag, trace
 from synapse.metrics import SERVER_NAME_LABEL
 from synapse.rest.client._base import client_patterns
 from synapse.rest.client.transactions import HttpTransactionCache
 from synapse.state import CREATE_KEY, POWER_KEY
+from synapse.storage.databases.main import DataStore
 from synapse.streams.config import PaginationConfig
 from synapse.types import JsonDict, Requester, StreamToken, ThirdPartyInstanceID, UserID
 from synapse.types.state import StateFilter
 from synapse.util.cancellation import cancellable
+from synapse.util.clock import Clock
 from synapse.util.events import generate_fake_event_id
 from synapse.util.stringutils import parse_and_validate_server_name
 
@@ -294,7 +299,7 @@ class RoomStateEventRestServlet(RestServlet):
         room_id: str,
         event_type: str,
         state_key: str,
-        txn_id: Optional[str] = None,
+        txn_id: str | None = None,
     ) -> tuple[int, JsonDict]:
         requester = await self.auth.get_user_by_req(request, allow_guest=True)
 
@@ -407,7 +412,7 @@ class RoomSendEventRestServlet(TransactionRestServlet):
         requester: Requester,
         room_id: str,
         event_type: str,
-        txn_id: Optional[str],
+        txn_id: str | None,
     ) -> tuple[int, JsonDict]:
         content = parse_json_object_from_request(request)
 
@@ -484,8 +489,8 @@ class RoomSendEventRestServlet(TransactionRestServlet):
 
 def _parse_request_delay(
     request: SynapseRequest,
-    max_delay: Optional[int],
-) -> Optional[int]:
+    max_delay: int | None,
+) -> int | None:
     """Parses from the request string the delay parameter for
         delayed event requests, and checks it for correctness.
 
@@ -544,11 +549,11 @@ class JoinRoomAliasServlet(ResolveRoomIdMixin, TransactionRestServlet):
         request: SynapseRequest,
         requester: Requester,
         room_identifier: str,
-        txn_id: Optional[str],
+        txn_id: str | None,
     ) -> tuple[int, JsonDict]:
         content = parse_json_object_from_request(request, allow_empty_body=True)
 
-        # twisted.web.server.Request.args is incorrectly defined as Optional[Any]
+        # twisted.web.server.Request.args is incorrectly defined as Any | None
         args: dict[bytes, list[bytes]] = request.args  # type: ignore
         # Prefer via over server_name (deprecated with MSC4156)
         remote_room_hosts = parse_strings_from_args(args, "via", required=False)
@@ -623,7 +628,7 @@ class PublicRoomListRestServlet(RestServlet):
             if server:
                 raise e
 
-        limit: Optional[int] = parse_integer(request, "limit", 0)
+        limit: int | None = parse_integer(request, "limit", 0)
         since_token = parse_string(request, "since")
 
         if limit == 0:
@@ -658,7 +663,7 @@ class PublicRoomListRestServlet(RestServlet):
         server = parse_string(request, "server")
         content = parse_json_object_from_request(request)
 
-        limit: Optional[int] = int(content.get("limit", 100))
+        limit: int | None = int(content.get("limit", 100))
         since_token = content.get("since", None)
         search_filter = content.get("filter", None)
 
@@ -790,6 +795,56 @@ class JoinedRoomMemberListRestServlet(RestServlet):
         return 200, {"joined": users_with_profile}
 
 
+@attr.s(slots=True, frozen=True, auto_attribs=True)
+class SerializeMessagesDeps:
+    clock: Clock
+    event_serializer: EventClientSerializer
+    store: DataStore
+
+
+@trace
+async def encode_messages_response(
+    *,
+    get_messages_result: GetMessagesResult,
+    serialize_options: SerializeEventConfig,
+    serialize_deps: SerializeMessagesDeps,
+) -> JsonDict:
+    """
+    Serialize a `GetMessagesResult` into the JSON response format for the `/messages`
+    endpoint.
+
+    This logic is shared between the client API and Synapse admin API.
+    """
+
+    time_now = serialize_deps.clock.time_msec()
+
+    serialized_result = {
+        "chunk": (
+            await serialize_deps.event_serializer.serialize_events(
+                get_messages_result.messages_chunk,
+                time_now,
+                config=serialize_options,
+                bundle_aggregations=get_messages_result.bundled_aggregations,
+            )
+        ),
+        "start": await get_messages_result.start_token.to_string(serialize_deps.store),
+    }
+
+    if get_messages_result.end_token is not None:
+        serialized_result["end"] = await get_messages_result.end_token.to_string(
+            serialize_deps.store
+        )
+
+    if get_messages_result.state is not None:
+        serialized_result[
+            "state"
+        ] = await serialize_deps.event_serializer.serialize_events(
+            get_messages_result.state, time_now, config=serialize_options
+        )
+
+    return serialized_result
+
+
 # TODO: Needs better unit testing
 class RoomMessageListRestServlet(RestServlet):
     PATTERNS = client_patterns("/rooms/(?P<room_id>[^/]*)/messages$", v1=True)
@@ -806,6 +861,7 @@ class RoomMessageListRestServlet(RestServlet):
         self.pagination_handler = hs.get_pagination_handler()
         self.auth = hs.get_auth()
         self.store = hs.get_datastores().main
+        self.event_serializer = hs.get_event_client_serializer()
 
     async def on_GET(
         self, request: SynapseRequest, room_id: str
@@ -839,12 +895,34 @@ class RoomMessageListRestServlet(RestServlet):
         ):
             as_client_event = False
 
-        msgs = await self.pagination_handler.get_messages(
+        serialize_options = SerializeEventConfig(
+            as_client_event=as_client_event, requester=requester
+        )
+
+        get_messages_result = await self.pagination_handler.get_messages(
             room_id=room_id,
             requester=requester,
             pagin_config=pagination_config,
             as_client_event=as_client_event,
             event_filter=event_filter,
+        )
+
+        # Useful for debugging timeline/pagination issues. For example, if a client
+        # isn't seeing the full history, we can check the homeserver logs to see if the
+        # client just never made the next request with the given `end` token.
+        logger.info(
+            "Responding to `/messages` request: {%s} %s %s -> %d messages with end_token=%s",
+            requester.user.to_string(),
+            request.get_method(),
+            request.get_redacted_uri(),
+            len(get_messages_result.messages_chunk),
+            (await get_messages_result.end_token.to_string(self.store))
+            if get_messages_result.end_token
+            else None,
+        )
+
+        response_content = await self.encode_response(
+            get_messages_result, serialize_options
         )
 
         processing_end_time = self.clock.time_msec()
@@ -854,7 +932,23 @@ class RoomMessageListRestServlet(RestServlet):
             **{SERVER_NAME_LABEL: self.server_name},
         ).observe((processing_end_time - processing_start_time) / 1000)
 
-        return 200, msgs
+        return 200, response_content
+
+    @trace
+    async def encode_response(
+        self,
+        get_messages_result: GetMessagesResult,
+        serialize_options: SerializeEventConfig,
+    ) -> JsonDict:
+        return await encode_messages_response(
+            get_messages_result=get_messages_result,
+            serialize_options=serialize_options,
+            serialize_deps=SerializeMessagesDeps(
+                clock=self.clock,
+                event_serializer=self.event_serializer,
+                store=self.store,
+            ),
+        )
 
 
 # TODO: Needs unit testing
@@ -1118,7 +1212,7 @@ class RoomMembershipRestServlet(TransactionRestServlet):
         requester: Requester,
         room_id: str,
         membership_action: str,
-        txn_id: Optional[str],
+        txn_id: str | None,
     ) -> tuple[int, JsonDict]:
         if requester.is_guest and membership_action not in {
             Membership.JOIN,
@@ -1241,7 +1335,7 @@ class RoomRedactEventRestServlet(TransactionRestServlet):
         requester: Requester,
         room_id: str,
         event_id: str,
-        txn_id: Optional[str],
+        txn_id: str | None,
     ) -> tuple[int, JsonDict]:
         content = parse_json_object_from_request(request)
 
@@ -1572,7 +1666,7 @@ class RoomHierarchyRestServlet(RestServlet):
         max_depth = parse_integer(request, "max_depth")
         limit = parse_integer(request, "limit")
 
-        # twisted.web.server.Request.args is incorrectly defined as Optional[Any]
+        # twisted.web.server.Request.args is incorrectly defined as Any | None
         remote_room_hosts = None
         if self.msc4235_enabled:
             args: dict[bytes, list[bytes]] = request.args  # type: ignore
@@ -1617,12 +1711,12 @@ class RoomSummaryRestServlet(ResolveRoomIdMixin, RestServlet):
     ) -> tuple[int, JsonDict]:
         try:
             requester = await self._auth.get_user_by_req(request, allow_guest=True)
-            requester_user_id: Optional[str] = requester.user.to_string()
+            requester_user_id: str | None = requester.user.to_string()
         except MissingClientTokenError:
             # auth is optional
             requester_user_id = None
 
-        # twisted.web.server.Request.args is incorrectly defined as Optional[Any]
+        # twisted.web.server.Request.args is incorrectly defined as Any | None
         args: dict[bytes, list[bytes]] = request.args  # type: ignore
         remote_room_hosts = parse_strings_from_args(args, "via", required=False)
         room_id, remote_room_hosts = await self.resolve_room_id(

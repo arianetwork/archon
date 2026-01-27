@@ -29,6 +29,7 @@ from synapse.push import Pusher, PusherConfig, PusherConfigException, ThrottlePa
 from synapse.push.mailer import Mailer
 from synapse.push.push_types import EmailReason
 from synapse.storage.databases.main.event_push_actions import EmailPushAction
+from synapse.util.duration import Duration
 from synapse.util.threepids import validate_email
 
 if TYPE_CHECKING:
@@ -174,7 +175,7 @@ class EmailPusher(Pusher):
             )
         )
 
-        soonest_due_at: Optional[int] = None
+        soonest_due_at: int | None = None
 
         if not unprocessed:
             await self.save_last_stream_ordering_and_success(self.max_stream_ordering)
@@ -229,7 +230,7 @@ class EmailPusher(Pusher):
         if soonest_due_at is not None:
             delay = self.seconds_until(soonest_due_at)
             self.timed_call = self.hs.get_clock().call_later(
-                delay,
+                Duration(seconds=delay),
                 self.on_timer,
             )
 

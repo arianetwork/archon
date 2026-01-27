@@ -23,7 +23,7 @@ import hmac
 import logging
 import secrets
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING
 
 import attr
 from pydantic import StrictBool, StrictInt, StrictStr
@@ -163,7 +163,7 @@ class UsersRestServletV2(RestServlet):
 
         direction = parse_enum(request, "dir", Direction, default=Direction.FORWARDS)
 
-        # twisted.web.server.Request.args is incorrectly defined as Optional[Any]
+        # twisted.web.server.Request.args is incorrectly defined as Any | None
         args: dict[bytes, list[bytes]] = request.args  # type: ignore
         not_user_types = parse_strings_from_args(args, "not_user_type")
 
@@ -195,7 +195,7 @@ class UsersRestServletV2(RestServlet):
 
         return HTTPStatus.OK, ret
 
-    def _parse_parameter_deactivated(self, request: SynapseRequest) -> Optional[bool]:
+    def _parse_parameter_deactivated(self, request: SynapseRequest) -> bool | None:
         """
         Return None (no filtering) if `deactivated` is `true`, otherwise return `False`
         (exclude deactivated users from the results).
@@ -206,13 +206,11 @@ class UsersRestServletV2(RestServlet):
 class UsersRestServletV3(UsersRestServletV2):
     PATTERNS = admin_patterns("/users$", "v3")
 
-    def _parse_parameter_deactivated(
-        self, request: SynapseRequest
-    ) -> Union[bool, None]:
+    def _parse_parameter_deactivated(self, request: SynapseRequest) -> bool | None:
         return parse_boolean(request, "deactivated")
 
 
-class UserRestServletV2(RestServlet):
+class UserRestServletV2Get(RestServlet):
     PATTERNS = admin_patterns("/users/(?P<user_id>[^/]*)$", "v2")
 
     """Get request to list user details.
@@ -222,22 +220,6 @@ class UserRestServletV2(RestServlet):
 
     returns:
         200 OK with user details if success otherwise an error.
-
-    Put request to allow an administrator to add or modify a user.
-    This needs user to have administrator access in Synapse.
-    We use PUT instead of POST since we already know the id of the user
-    object to create. POST could be used to create guests.
-
-    PUT /_synapse/admin/v2/users/<user_id>
-    {
-        "password": "secret",
-        "displayname": "User"
-    }
-
-    returns:
-        201 OK with new user object if user was created or
-        200 OK with modified user object if user was modified
-        otherwise an error.
     """
 
     def __init__(self, hs: "HomeServer"):
@@ -268,6 +250,28 @@ class UserRestServletV2(RestServlet):
             raise NotFoundError("User not found")
 
         return HTTPStatus.OK, user_info_dict
+
+
+class UserRestServletV2(UserRestServletV2Get):
+    """
+    Put request to allow an administrator to add or modify a user.
+    This needs user to have administrator access in Synapse.
+    We use PUT instead of POST since we already know the id of the user
+    object to create. POST could be used to create guests.
+
+    Note: This inherits from `UserRestServletV2Get`, so also supports the `GET` route.
+
+    PUT /_synapse/admin/v2/users/<user_id>
+    {
+        "password": "secret",
+        "displayname": "User"
+    }
+
+    returns:
+        201 OK with new user object if user was created or
+        200 OK with modified user object if user was modified
+        otherwise an error.
+    """
 
     async def on_PUT(
         self, request: SynapseRequest, user_id: str
@@ -340,7 +344,7 @@ class UserRestServletV2(RestServlet):
                 HTTPStatus.BAD_REQUEST, "An user can't be deactivated and locked"
             )
 
-        approved: Optional[bool] = None
+        approved: bool | None = None
         if "approved" in body and self._msc3866_enabled:
             approved = body["approved"]
             if not isinstance(approved, bool):
@@ -920,7 +924,7 @@ class SearchUsersRestServlet(RestServlet):
 
     async def on_GET(
         self, request: SynapseRequest, target_user_id: str
-    ) -> tuple[int, Optional[list[JsonDict]]]:
+    ) -> tuple[int, list[JsonDict] | None]:
         """Get request to search user table for specific users according to
         search term.
         This needs user to have a administrator access in Synapse.
@@ -1033,7 +1037,7 @@ class UserAdminServlet(RestServlet):
         return HTTPStatus.OK, {}
 
 
-class UserMembershipRestServlet(RestServlet):
+class UserJoinedRoomsRestServlet(RestServlet):
     """
     Get list of joined room ID's for a user.
     """
@@ -1054,6 +1058,28 @@ class UserMembershipRestServlet(RestServlet):
         rooms_response = {"joined_rooms": list(room_ids), "total": len(room_ids)}
 
         return HTTPStatus.OK, rooms_response
+
+
+class UserMembershipsRestServlet(RestServlet):
+    """
+    Get list of room memberships for a user.
+    """
+
+    PATTERNS = admin_patterns("/users/(?P<user_id>[^/]*)/memberships$")
+
+    def __init__(self, hs: "HomeServer"):
+        self.is_mine = hs.is_mine
+        self.auth = hs.get_auth()
+        self.store = hs.get_datastores().main
+
+    async def on_GET(
+        self, request: SynapseRequest, user_id: str
+    ) -> tuple[int, JsonDict]:
+        await assert_requester_is_admin(self.auth, request)
+
+        memberships = await self.store.get_memberships_for_user(user_id)
+
+        return HTTPStatus.OK, {"memberships": memberships}
 
 
 class PushersRestServlet(RestServlet):
@@ -1476,9 +1502,9 @@ class RedactUser(RestServlet):
 
     class PostBody(RequestBodyModel):
         rooms: list[StrictStr]
-        reason: Optional[StrictStr] = None
-        limit: Optional[StrictInt] = None
-        use_admin: Optional[StrictBool] = None
+        reason: StrictStr | None = None
+        limit: StrictInt | None = None
+        use_admin: StrictBool | None = None
 
     async def on_POST(
         self, request: SynapseRequest, user_id: str

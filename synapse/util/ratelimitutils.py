@@ -31,7 +31,6 @@ from typing import (
     Iterator,
     Mapping,
     MutableSet,
-    Optional,
 )
 from weakref import WeakSet
 
@@ -49,6 +48,7 @@ from synapse.logging.context import (
 from synapse.logging.opentracing import start_active_span
 from synapse.metrics import SERVER_NAME_LABEL, Histogram, LaterGauge
 from synapse.util.clock import Clock
+from synapse.util.duration import Duration
 
 if typing.TYPE_CHECKING:
     from contextlib import _GeneratorContextManager
@@ -164,7 +164,7 @@ class FederationRateLimiter:
         our_server_name: str,
         clock: Clock,
         config: FederationRatelimitSettings,
-        metrics_name: Optional[str] = None,
+        metrics_name: str | None = None,
     ):
         """
         Args:
@@ -217,7 +217,7 @@ class _PerHostRatelimiter:
         our_server_name: str,
         clock: Clock,
         config: FederationRatelimitSettings,
-        metrics_name: Optional[str] = None,
+        metrics_name: str | None = None,
     ):
         """
         Args:
@@ -354,7 +354,9 @@ class _PerHostRatelimiter:
                     rate_limiter_name=self.metrics_name,
                     **{SERVER_NAME_LABEL: self.our_server_name},
                 ).inc()
-            ret_defer = run_in_background(self.clock.sleep, self.sleep_sec)
+            ret_defer = run_in_background(
+                self.clock.sleep, Duration(seconds=self.sleep_sec)
+            )
 
             self.sleeping_requests.add(request_id)
 
@@ -415,6 +417,6 @@ class _PerHostRatelimiter:
                 pass
 
         self.clock.call_later(
-            0.0,
+            Duration(seconds=0),
             start_next_request,
         )

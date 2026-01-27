@@ -21,7 +21,7 @@
 #
 import logging
 import random
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse
 
 import attr
@@ -58,6 +58,7 @@ from synapse.types.rest.client import (
     EmailRequestTokenBody,
     MsisdnRequestTokenBody,
 )
+from synapse.util.duration import Duration
 from synapse.util.msisdn import phone_number_to_msisdn
 from synapse.util.stringutils import assert_valid_client_secret, random_string
 from synapse.util.threepids import check_3pid_allowed, validate_email
@@ -125,7 +126,9 @@ class EmailPasswordRequestTokenRestServlet(RestServlet):
                 # comments for request_token_inhibit_3pid_errors.
                 # Also wait for some random amount of time between 100ms and 1s to make it
                 # look like we did something.
-                await self.hs.get_clock().sleep(random.randint(1, 10) / 10)
+                await self.hs.get_clock().sleep(
+                    Duration(milliseconds=random.randint(100, 1000))
+                )
                 return 200, {"sid": random_string(16)}
 
             raise SynapseError(400, "Email not found", Codes.THREEPID_NOT_FOUND)
@@ -161,11 +164,11 @@ class PasswordRestServlet(RestServlet):
         self._set_password_handler = hs.get_set_password_handler()
 
     class PostBody(RequestBodyModel):
-        auth: Optional[AuthenticationData] = None
+        auth: AuthenticationData | None = None
         logout_devices: StrictBool = True
-        new_password: Optional[
-            Annotated[str, StringConstraints(max_length=512, strict=True)]
-        ] = None
+        new_password: (
+            Annotated[str, StringConstraints(max_length=512, strict=True)] | None
+        ) = None
 
     @interactive_auth_handler
     async def on_POST(self, request: SynapseRequest) -> tuple[int, JsonDict]:
@@ -259,7 +262,7 @@ class PasswordRestServlet(RestServlet):
         # If we have a password in this request, prefer it. Otherwise, use the
         # password hash from an earlier request.
         if new_password:
-            password_hash: Optional[str] = await self.auth_handler.hash(new_password)
+            password_hash: str | None = await self.auth_handler.hash(new_password)
         elif session_id is not None:
             password_hash = existing_session_password_hash
         else:
@@ -289,8 +292,8 @@ class DeactivateAccountRestServlet(RestServlet):
         self._deactivate_account_handler = hs.get_deactivate_account_handler()
 
     class PostBody(RequestBodyModel):
-        auth: Optional[AuthenticationData] = None
-        id_server: Optional[StrictStr] = None
+        auth: AuthenticationData | None = None
+        id_server: StrictStr | None = None
         # Not specced, see https://github.com/matrix-org/matrix-spec/issues/297
         erase: StrictBool = False
 
@@ -383,7 +386,9 @@ class EmailThreepidRequestTokenRestServlet(RestServlet):
                 # comments for request_token_inhibit_3pid_errors.
                 # Also wait for some random amount of time between 100ms and 1s to make it
                 # look like we did something.
-                await self.hs.get_clock().sleep(random.randint(1, 10) / 10)
+                await self.hs.get_clock().sleep(
+                    Duration(milliseconds=random.randint(100, 1000))
+                )
                 return 200, {"sid": random_string(16)}
 
             raise SynapseError(400, "Email is already in use", Codes.THREEPID_IN_USE)
@@ -449,7 +454,9 @@ class MsisdnThreepidRequestTokenRestServlet(RestServlet):
                 # comments for request_token_inhibit_3pid_errors.
                 # Also wait for some random amount of time between 100ms and 1s to make it
                 # look like we did something.
-                await self.hs.get_clock().sleep(random.randint(1, 10) / 10)
+                await self.hs.get_clock().sleep(
+                    Duration(milliseconds=random.randint(100, 1000))
+                )
                 return 200, {"sid": random_string(16)}
 
             logger.info("MSISDN %s is already in use by %s", msisdn, existing_user_id)
@@ -663,7 +670,7 @@ class ThreepidAddRestServlet(RestServlet):
         self.auth_handler = hs.get_auth_handler()
 
     class PostBody(RequestBodyModel):
-        auth: Optional[AuthenticationData] = None
+        auth: AuthenticationData | None = None
         client_secret: ClientSecretStr
         sid: StrictStr
 
@@ -742,7 +749,7 @@ class ThreepidUnbindRestServlet(RestServlet):
 
     class PostBody(RequestBodyModel):
         address: StrictStr
-        id_server: Optional[StrictStr] = None
+        id_server: StrictStr | None = None
         medium: Literal["email", "msisdn"]
 
     async def on_POST(self, request: SynapseRequest) -> tuple[int, JsonDict]:
@@ -771,7 +778,7 @@ class ThreepidDeleteRestServlet(RestServlet):
 
     class PostBody(RequestBodyModel):
         address: StrictStr
-        id_server: Optional[StrictStr] = None
+        id_server: StrictStr | None = None
         medium: Literal["email", "msisdn"]
 
     async def on_POST(self, request: SynapseRequest) -> tuple[int, JsonDict]:

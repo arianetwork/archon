@@ -19,7 +19,7 @@
 #
 #
 
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import attr
 
@@ -39,7 +39,7 @@ class RatelimitSettings:
         cls,
         config: dict[str, Any],
         key: str,
-        defaults: Optional[dict[str, float]] = None,
+        defaults: dict[str, float] | None = None,
     ) -> "RatelimitSettings":
         """Parse config[key] as a new-style rate limiter config.
 
@@ -251,4 +251,10 @@ class RatelimitConfig(Config):
             config,
             "rc_reports",
             defaults={"per_second": 1, "burst_count": 5},
+        )
+
+        self.rc_user_directory = RatelimitSettings.parse(
+            config,
+            "rc_user_directory",
+            defaults={"per_second": 0.016, "burst_count": 200},
         )

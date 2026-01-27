@@ -28,8 +28,6 @@ from typing import (
     Callable,
     Collection,
     Mapping,
-    Optional,
-    Union,
 )
 
 from prometheus_client import Counter, Gauge, Histogram
@@ -91,6 +89,7 @@ from synapse.types import JsonDict, StateMap, UserID, get_domain_from_id
 from synapse.util import unwrapFirstError
 from synapse.util.async_helpers import Linearizer, concurrently_execute, gather_results
 from synapse.util.caches.response_cache import ResponseCache
+from synapse.util.duration import Duration
 from synapse.util.stringutils import parse_server_name
 
 if TYPE_CHECKING:
@@ -176,13 +175,11 @@ class FederationServer(FederationBase):
 
         # We cache responses to state queries, as they take a while and often
         # come in waves.
-        self._state_resp_cache: ResponseCache[tuple[str, Optional[str]]] = (
-            ResponseCache(
-                clock=hs.get_clock(),
-                name="state_resp",
-                server_name=self.server_name,
-                timeout_ms=30000,
-            )
+        self._state_resp_cache: ResponseCache[tuple[str, str | None]] = ResponseCache(
+            clock=hs.get_clock(),
+            name="state_resp",
+            server_name=self.server_name,
+            timeout_ms=30000,
         )
         self._state_ids_resp_cache: ResponseCache[tuple[str, str]] = ResponseCache(
             clock=hs.get_clock(),
@@ -230,7 +227,7 @@ class FederationServer(FederationBase):
                 )
 
             # We pause a bit so that we don't start handling all rooms at once.
-            await self._clock.sleep(random.uniform(0, 0.1))
+            await self._clock.sleep(Duration(seconds=random.uniform(0, 0.1)))
 
     async def on_backfill_request(
         self, origin: str, room_id: str, versions: list[str], limit: int
@@ -305,7 +302,9 @@ class FederationServer(FederationBase):
             # Start a periodic check for old staged events. This is to handle
             # the case where locks time out, e.g. if another process gets killed
             # without dropping its locks.
-            self._clock.looping_call(self._handle_old_staged_events, 60 * 1000)
+            self._clock.looping_call(
+                self._handle_old_staged_events, Duration(minutes=1)
+            )
 
         # keep this as early as possible to make the calculated origin ts as
         # accurate as possible.
@@ -666,7 +665,7 @@ class FederationServer(FederationBase):
 
     async def on_pdu_request(
         self, origin: str, event_id: str
-    ) -> tuple[int, Union[JsonDict, str]]:
+    ) -> tuple[int, JsonDict | str]:
         pdu = await self.handler.get_persisted_pdu(origin, event_id)
 
         if pdu:
@@ -763,7 +762,7 @@ class FederationServer(FederationBase):
         prev_state_ids = await context.get_prev_state_ids()
 
         state_event_ids: Collection[str]
-        servers_in_room: Optional[Collection[str]]
+        servers_in_room: Collection[str] | None
         if caller_supports_partial_state:
             summary = await self.store.get_room_summary(room_id)
             state_event_ids = _get_event_ids_for_partial_state_join(
@@ -1126,7 +1125,7 @@ class FederationServer(FederationBase):
 
         return {"events": serialize_and_filter_pdus(missing_events, time_now)}
 
-    async def on_openid_userinfo(self, token: str) -> Optional[str]:
+    async def on_openid_userinfo(self, token: str) -> str | None:
         ts_now_ms = self._clock.time_msec()
         return await self.store.get_user_id_for_open_id_token(token, ts_now_ms)
 
@@ -1205,7 +1204,7 @@ class FederationServer(FederationBase):
 
     async def _get_next_nonspam_staged_event_for_room(
         self, room_id: str, room_version: RoomVersion
-    ) -> Optional[tuple[str, EventBase]]:
+    ) -> tuple[str, EventBase] | None:
         """Fetch the first non-spam event from staging queue.
 
         Args:
@@ -1246,8 +1245,8 @@ class FederationServer(FederationBase):
         room_id: str,
         room_version: RoomVersion,
         lock: Lock,
-        latest_origin: Optional[str] = None,
-        latest_event: Optional[EventBase] = None,
+        latest_origin: str | None = None,
+        latest_event: EventBase | None = None,
     ) -> None:
         """Process events in the staging area for the given room.
 

@@ -22,7 +22,7 @@
 
 import logging
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from pydantic import ConfigDict, StrictStr
 
@@ -95,7 +95,7 @@ class DeleteDevicesRestServlet(RestServlet):
         self.auth_handler = hs.get_auth_handler()
 
     class PostBody(RequestBodyModel):
-        auth: Optional[AuthenticationData] = None
+        auth: AuthenticationData | None = None
         devices: list[StrictStr]
 
     @interactive_auth_handler
@@ -173,7 +173,7 @@ class DeviceRestServlet(RestServlet):
         return 200, device
 
     class DeleteBody(RequestBodyModel):
-        auth: Optional[AuthenticationData] = None
+        auth: AuthenticationData | None = None
 
     @interactive_auth_handler
     async def on_DELETE(
@@ -218,7 +218,7 @@ class DeviceRestServlet(RestServlet):
         return 200, {}
 
     class PutBody(RequestBodyModel):
-        display_name: Optional[StrictStr] = None
+        display_name: StrictStr | None = None
 
     async def on_PUT(
         self, request: SynapseRequest, device_id: str
@@ -253,131 +253,6 @@ class DehydratedDeviceDataModel(RequestBodyModel):
     algorithm: StrictStr
 
 
-class DehydratedDeviceServlet(RestServlet):
-    """Retrieve or store a dehydrated device.
-
-    Implements MSC2697.
-
-    GET /org.matrix.msc2697.v2/dehydrated_device
-
-    HTTP/1.1 200 OK
-    Content-Type: application/json
-
-    {
-      "device_id": "dehydrated_device_id",
-      "device_data": {
-        "algorithm": "org.matrix.msc2697.v1.dehydration.v1.olm",
-        "account": "dehydrated_device"
-      }
-    }
-
-    PUT /org.matrix.msc2697.v2/dehydrated_device
-    Content-Type: application/json
-
-    {
-      "device_data": {
-        "algorithm": "org.matrix.msc2697.v1.dehydration.v1.olm",
-        "account": "dehydrated_device"
-      }
-    }
-
-    HTTP/1.1 200 OK
-    Content-Type: application/json
-
-    {
-      "device_id": "dehydrated_device_id"
-    }
-
-    """
-
-    PATTERNS = client_patterns(
-        "/org.matrix.msc2697.v2/dehydrated_device$",
-        releases=(),
-    )
-
-    def __init__(self, hs: "HomeServer"):
-        super().__init__()
-        self.hs = hs
-        self.auth = hs.get_auth()
-        handler = hs.get_device_handler()
-        self.device_handler = handler
-
-    async def on_GET(self, request: SynapseRequest) -> tuple[int, JsonDict]:
-        requester = await self.auth.get_user_by_req(request)
-        dehydrated_device = await self.device_handler.get_dehydrated_device(
-            requester.user.to_string()
-        )
-        if dehydrated_device is not None:
-            (device_id, device_data) = dehydrated_device
-            result = {"device_id": device_id, "device_data": device_data}
-            return 200, result
-        else:
-            raise errors.NotFoundError("No dehydrated device available")
-
-    class PutBody(RequestBodyModel):
-        device_data: DehydratedDeviceDataModel
-        initial_device_display_name: Optional[StrictStr] = None
-
-    async def on_PUT(self, request: SynapseRequest) -> tuple[int, JsonDict]:
-        submission = parse_and_validate_json_object_from_request(request, self.PutBody)
-        requester = await self.auth.get_user_by_req(request)
-
-        device_id = await self.device_handler.store_dehydrated_device(
-            requester.user.to_string(),
-            None,
-            submission.device_data.dict(),
-            submission.initial_device_display_name,
-        )
-        return 200, {"device_id": device_id}
-
-
-class ClaimDehydratedDeviceServlet(RestServlet):
-    """Claim a dehydrated device.
-
-    POST /org.matrix.msc2697.v2/dehydrated_device/claim
-    Content-Type: application/json
-
-    {
-      "device_id": "dehydrated_device_id"
-    }
-
-    HTTP/1.1 200 OK
-    Content-Type: application/json
-
-    {
-      "success": true,
-    }
-
-    """
-
-    PATTERNS = client_patterns(
-        "/org.matrix.msc2697.v2/dehydrated_device/claim", releases=()
-    )
-
-    def __init__(self, hs: "HomeServer"):
-        super().__init__()
-        self.hs = hs
-        self.auth = hs.get_auth()
-        handler = hs.get_device_handler()
-        self.device_handler = handler
-
-    class PostBody(RequestBodyModel):
-        device_id: StrictStr
-
-    async def on_POST(self, request: SynapseRequest) -> tuple[int, JsonDict]:
-        requester = await self.auth.get_user_by_req(request)
-
-        submission = parse_and_validate_json_object_from_request(request, self.PostBody)
-
-        result = await self.device_handler.rehydrate_device(
-            requester.user.to_string(),
-            self.auth.get_access_token_from_request(request),
-            submission.device_id,
-        )
-
-        return 200, result
-
-
 class DehydratedDeviceEventsServlet(RestServlet):
     PATTERNS = client_patterns(
         "/org.matrix.msc3814.v1/dehydrated_device/(?P<device_id>[^/]*)/events$",
@@ -391,7 +266,7 @@ class DehydratedDeviceEventsServlet(RestServlet):
         self.store = hs.get_datastores().main
 
     class PostBody(RequestBodyModel):
-        next_batch: Optional[StrictStr] = None
+        next_batch: StrictStr | None = None
 
     async def on_POST(
         self, request: SynapseRequest, device_id: str
@@ -538,7 +413,7 @@ class DehydratedDeviceV2Servlet(RestServlet):
     class PutBody(RequestBodyModel):
         device_data: DehydratedDeviceDataModel
         device_id: StrictStr
-        initial_device_display_name: Optional[StrictStr]
+        initial_device_display_name: StrictStr | None
         model_config = ConfigDict(extra="allow")
 
     async def on_PUT(self, request: SynapseRequest) -> tuple[int, JsonDict]:
@@ -579,9 +454,6 @@ def register_servlets(hs: "HomeServer", http_server: HttpServer) -> None:
     DevicesRestServlet(hs).register(http_server)
     DeviceRestServlet(hs).register(http_server)
 
-    if hs.config.experimental.msc2697_enabled:
-        DehydratedDeviceServlet(hs).register(http_server)
-        ClaimDehydratedDeviceServlet(hs).register(http_server)
     if hs.config.experimental.msc3814_enabled:
         DehydratedDeviceV2Servlet(hs).register(http_server)
         DehydratedDeviceEventsServlet(hs).register(http_server)

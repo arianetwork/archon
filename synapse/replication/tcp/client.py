@@ -21,7 +21,7 @@
 """A replication client for use by synapse workers."""
 
 import logging
-from typing import TYPE_CHECKING, Iterable, Optional
+from typing import TYPE_CHECKING, Iterable
 
 from sortedcontainers import SortedList
 
@@ -55,6 +55,7 @@ from synapse.replication.tcp.streams.partial_state import (
 )
 from synapse.types import PersistedEventPosition, ReadReceipt, StreamKeyType, UserID
 from synapse.util.async_helpers import Linearizer, timeout_deferred
+from synapse.util.duration import Duration
 from synapse.util.iterutils import batch_iter
 from synapse.util.metrics import Measure
 
@@ -89,7 +90,7 @@ class ReplicationDataHandler:
         self._pusher_pool = hs.get_pusherpool()
         self._presence_handler = hs.get_presence_handler()
 
-        self.send_handler: Optional[FederationSenderHandler] = None
+        self.send_handler: FederationSenderHandler | None = None
         if hs.should_send_federation():
             self.send_handler = FederationSenderHandler(hs)
 
@@ -173,7 +174,7 @@ class ReplicationDataHandler:
                 )
 
                 # Yield to reactor so that we don't block.
-                await self._clock.sleep(0)
+                await self._clock.sleep(Duration(seconds=0))
         elif stream_name == PushersStream.NAME:
             for row in rows:
                 if row.deleted:
@@ -435,7 +436,7 @@ class FederationSenderHandler:
 
         # Stores the latest position in the federation stream we've gotten up
         # to. This is always set before we use it.
-        self.federation_position: Optional[int] = None
+        self.federation_position: int | None = None
 
         self._fed_position_linearizer = Linearizer(
             name="_fed_position_linearizer", clock=hs.get_clock()

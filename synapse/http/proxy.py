@@ -65,7 +65,7 @@ assert all(header.lower() == header for header in HOP_BY_HOP_HEADERS_LOWERCASE)
 
 
 def parse_connection_header_value(
-    connection_header_value: Optional[bytes],
+    connection_header_value: bytes | None,
 ) -> set[str]:
     """
     Parse the `Connection` header to determine which headers we should not be copied
